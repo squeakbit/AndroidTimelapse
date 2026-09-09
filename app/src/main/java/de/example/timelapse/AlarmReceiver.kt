@@ -24,12 +24,6 @@ class AlarmReceiver : BroadcastReceiver() {
                 try { ContextCompat.startForegroundService(c, x) }
                 catch (t: Throwable) { android.util.Log.w("Timelapse", "failed to start upload sync service", t); WakeLockHolder.release() }
             }
-            AlarmScheduler.HEARTBEAT -> {
-                s.scheduleHeartbeat()
-                val x = Intent(c, DataSyncService::class.java).setAction(DataSyncService.ACTION_HEARTBEAT)
-                try { ContextCompat.startForegroundService(c, x) }
-                catch (t: Throwable) { android.util.Log.w("Timelapse", "failed to start heartbeat sync service", t); WakeLockHolder.release() }
-            }
             else -> WakeLockHolder.release()
         }
     }

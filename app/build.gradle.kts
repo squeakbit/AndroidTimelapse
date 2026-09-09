@@ -49,11 +49,14 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     debugImplementation("androidx.compose.ui:ui-tooling")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.11.0")
+    // Needed for androidx.lifecycle.compose.LocalLifecycleOwner (the
+    // non-deprecated replacement for androidx.compose.ui.platform.LocalLifecycleOwner).
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
     implementation("androidx.room:room-runtime:2.8.4")
     implementation("androidx.room:room-ktx:2.8.4")
     ksp("androidx.room:room-compiler:2.8.4")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     implementation("androidx.security:security-crypto:1.1.0")
-    implementation("com.hierynomus:smbj:0.14.0")
+    implementation("com.hierynomus:smbj:0.15.0")
     implementation("org.eclipse.paho:org.eclipse.paho.mqttv5.client:1.2.5")
 }

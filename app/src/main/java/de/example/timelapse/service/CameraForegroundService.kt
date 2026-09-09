@@ -24,17 +24,16 @@ import kotlinx.coroutines.*
  * foreground context (MainActivity, when the user is actively looking at the
  * app) and then stays alive indefinitely, running its own internal timing
  * loop to decide when the next capture is due - instead of relying on being
- * re-started by an external alarm for every single photo. AlarmManager is
- * still used, but only to periodically nudge this service back alive if it
- * was killed while the app *was* in the foreground a moment before (a much
- * smaller window than "started fresh from a cold background state").
+ * re-started by an external alarm for every single photo. There is no
+ * separate alarm nudging this service back alive either: every capture
+ * already publishes the full MQTT state, which is itself the "still alive"
+ * signal, so the only thing AlarmManager is still used for in this app is
+ * the daily SMB upload.
  */
 class CameraForegroundService:Service(){
  companion object{
   const val ACTION_START="de.example.timelapse.START"
   const val ACTION_STOP="de.example.timelapse.STOP"
-  /** Legacy action from the old alarm-per-capture design; treated the same as ACTION_START now. */
-  const val ACTION_CAPTURE="de.example.timelapse.CAPTURE"
  }
  private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
  private var loopJob:Job?=null
@@ -87,10 +86,10 @@ class CameraForegroundService:Service(){
   try{
    val id=PhotoCaptureHelper.resolveCameraId(this,s) ?: return
    PhotoCaptureHelper.captureAndSave(this,id,s.cameraWidth,s.cameraHeight,s.jpegQuality)
-   // Publish all sensor states right away (not just on the hourly
-   // heartbeat) so Home Assistant reflects a real-time proof-of-life for
-   // scheduled capture, independent of whether the app's UI process is
-   // still alive.
+   // Publish all sensor states right away (not just on the daily upload)
+   // so Home Assistant reflects a real-time proof-of-life for scheduled
+   // capture, independent of whether the app's UI process is still alive.
+   // This is what replaces the old separate hourly heartbeat.
    try{
     val mqtt=de.example.timelapse.mqtt.MqttClientManager(this)
     de.example.timelapse.mqtt.MqttDiscovery(mqtt,s,this).publishState()

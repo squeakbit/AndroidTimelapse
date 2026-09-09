@@ -1,11 +1,13 @@
 package de.example.timelapse
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.TimePickerDialog
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.SurfaceTexture
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.Surface
@@ -22,15 +24,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import de.example.timelapse.camera.Camera2Capture
 import de.example.timelapse.camera.CameraPreviewController
@@ -46,6 +49,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.time.Duration.Companion.seconds
 
 class MainActivity : ComponentActivity() {
 
@@ -104,14 +108,14 @@ class MainActivity : ComponentActivity() {
             val bmp = BitmapFactory.decodeFile(temp.absolutePath)
             temp.delete()
             bmp
-        } catch (t: Throwable) {
+        } catch (_: Throwable) {
             null
         }
     }
 
     @Composable
     private fun AppRoot() {
-        var tab by remember { mutableStateOf(0) }
+        var tab by remember { mutableIntStateOf(0) }
         MaterialTheme {
             Column(Modifier.fillMaxSize()) {
                 Text(
@@ -119,7 +123,7 @@ class MainActivity : ComponentActivity() {
                     style = MaterialTheme.typography.headlineMedium,
                     modifier = Modifier.padding(16.dp)
                 )
-                TabRow(selectedTabIndex = tab) {
+                PrimaryTabRow(selectedTabIndex = tab) {
                     Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Start") })
                     Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Einstellungen") })
                 }
@@ -148,17 +152,17 @@ class MainActivity : ComponentActivity() {
         var textureSurface by remember { mutableStateOf<Surface?>(null) }
 
         var windowEnabled by remember { mutableStateOf(settings.timeWindowEnabled) }
-        var windowStartHour by remember { mutableStateOf(settings.windowStartHour) }
-        var windowStartMinute by remember { mutableStateOf(settings.windowStartMinute) }
-        var windowEndHour by remember { mutableStateOf(settings.windowEndHour) }
-        var windowEndMinute by remember { mutableStateOf(settings.windowEndMinute) }
+        var windowStartHour by remember { mutableIntStateOf(settings.windowStartHour) }
+        var windowStartMinute by remember { mutableIntStateOf(settings.windowStartMinute) }
+        var windowEndHour by remember { mutableIntStateOf(settings.windowEndHour) }
+        var windowEndMinute by remember { mutableIntStateOf(settings.windowEndMinute) }
 
         var uploadStatus by remember { mutableStateOf("") }
         var uploading by remember { mutableStateOf(false) }
 
         var testModeEnabled by remember { mutableStateOf(false) }
-        var testIntervalSeconds by remember { mutableStateOf(10) }
-        var testShotsTaken by remember { mutableStateOf(0) }
+        var testIntervalSeconds by remember { mutableIntStateOf(10) }
+        var testShotsTaken by remember { mutableIntStateOf(0) }
         var testStatus by remember { mutableStateOf("") }
         val testModeMaxShots = 30
 
@@ -205,7 +209,11 @@ class MainActivity : ComponentActivity() {
         }
 
         DisposableEffect(Unit) {
-            onDispose { previewController.stop() }
+            onDispose {
+                previewController.stop()
+                textureSurface?.release()
+                textureSurface = null
+            }
         }
 
         // Captures a test photo and uploads it immediately (bypassing the
@@ -216,7 +224,7 @@ class MainActivity : ComponentActivity() {
                 testShotsTaken = 0
                 while (testModeEnabled && testShotsTaken < testModeMaxShots) {
                     testStatus = "Nächstes Testfoto in ${testIntervalSeconds}s …"
-                    delay(testIntervalSeconds * 1000L)
+                    delay(testIntervalSeconds.seconds)
                     if (!testModeEnabled) break
                     testStatus = "Nehme Testfoto auf …"
                     val outcome = withContext(Dispatchers.IO) {
@@ -313,10 +321,15 @@ class MainActivity : ComponentActivity() {
                                             override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
                                                 val (pw, ph) = previewCaptureSize(settings.cameraWidth, settings.cameraHeight)
                                                 st.setDefaultBufferSize(pw, ph)
+                                                // Release any previously held Surface before replacing
+                                                // it, so nothing leaks if this fires again without an
+                                                // intervening onSurfaceTextureDestroyed.
+                                                textureSurface?.release()
                                                 textureSurface = Surface(st)
                                             }
                                             override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
                                             override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                                                textureSurface?.release()
                                                 textureSurface = null
                                                 return true
                                             }
@@ -371,7 +384,7 @@ class MainActivity : ComponentActivity() {
                 item {
                     Text(
                         "Live-Vorschau blockiert geplante Aufnahmen, solange sie läuft – " +
-                            "wird beim Verlassen der App automatisch beendet.",
+                                "wird beim Verlassen der App automatisch beendet.",
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
@@ -397,7 +410,7 @@ class MainActivity : ComponentActivity() {
             }
 
             item {
-                Divider(Modifier.padding(vertical = 4.dp))
+                HorizontalDivider(Modifier.padding(vertical = 4.dp))
                 Text("Zeitfenster", style = MaterialTheme.typography.titleMedium)
             }
 
@@ -467,7 +480,7 @@ class MainActivity : ComponentActivity() {
             }
 
             item {
-                Divider(Modifier.padding(vertical = 4.dp))
+                HorizontalDivider(Modifier.padding(vertical = 4.dp))
                 Text("Übertragung", style = MaterialTheme.typography.titleMedium)
             }
 
@@ -480,7 +493,7 @@ class MainActivity : ComponentActivity() {
                         lifecycleScope.launch {
                             val result = try {
                                 SmbUploader(this@MainActivity).uploadPendingPhotos()
-                            } catch (t: Throwable) {
+                            } catch (_: Throwable) {
                                 null
                             }
                             uploadStatus = if (result != null) {
@@ -492,8 +505,8 @@ class MainActivity : ComponentActivity() {
                                 "Upload fehlgeschlagen"
                             }
                             // Keep MQTT sensors in sync immediately instead of
-                            // waiting for the next hourly heartbeat, since this
-                            // manual trigger bypasses the scheduled sync path.
+                            // waiting for the next scheduled capture or the daily
+                            // upload sync, since this manual trigger bypasses both.
                             withContext(Dispatchers.IO) {
                                 try {
                                     val mqtt = MqttClientManager(this@MainActivity)
@@ -520,12 +533,12 @@ class MainActivity : ComponentActivity() {
             }
 
             item {
-                Divider(Modifier.padding(vertical = 4.dp))
+                HorizontalDivider(Modifier.padding(vertical = 4.dp))
                 Text("Testmodus", style = MaterialTheme.typography.titleMedium)
                 Text(
                     "Ignoriert Intervall und Zeitfenster: nimmt in kurzem Abstand Testfotos auf " +
-                        "und lädt sie sofort per SMB hoch. Läuft nur im Vordergrund und stoppt " +
-                        "automatisch nach $testModeMaxShots Fotos.",
+                            "und lädt sie sofort per SMB hoch. Läuft nur im Vordergrund und stoppt " +
+                            "automatisch nach $testModeMaxShots Fotos.",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -587,10 +600,8 @@ class MainActivity : ComponentActivity() {
         var smbDomain by remember { mutableStateOf(settings.smbDomain) }
         var smbTestStatus by remember { mutableStateOf("") }
         var smbTesting by remember { mutableStateOf(false) }
-        var uploadMode by remember { mutableStateOf(settings.uploadMode) }
-        var smbUploadHour by remember { mutableStateOf(settings.smbUploadHour) }
-        var smbUploadMinute by remember { mutableStateOf(settings.smbUploadMinute) }
-        var uploadIntervalHours by remember { mutableStateOf(settings.uploadIntervalHours.toString()) }
+        var smbUploadHour by remember { mutableIntStateOf(settings.smbUploadHour) }
+        var smbUploadMinute by remember { mutableIntStateOf(settings.smbUploadMinute) }
         var deleteAfterUpload by remember { mutableStateOf(settings.deleteAfterUpload) }
 
         var mqttHost by remember { mutableStateOf(settings.mqttHost) }
@@ -653,7 +664,7 @@ class MainActivity : ComponentActivity() {
                             readOnly = true,
                             label = { Text("Auflösung") },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = resolutionExpanded) },
-                            modifier = Modifier.menuAnchor().fillMaxWidth()
+                            modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).fillMaxWidth()
                         )
                         ExposedDropdownMenu(
                             expanded = resolutionExpanded,
@@ -695,7 +706,7 @@ class MainActivity : ComponentActivity() {
 
 
             item {
-                Divider(Modifier.padding(vertical = 4.dp))
+                HorizontalDivider(Modifier.padding(vertical = 4.dp))
                 Text("SMB", style = MaterialTheme.typography.titleMedium)
             }
 
@@ -815,65 +826,28 @@ class MainActivity : ComponentActivity() {
                 item { Text(smbTestStatus) }
             }
 
+            // Der Intervall-Upload wurde wieder entfernt (unzuverlässig, nur
+            // erhöhter Akkuverbrauch). Upload läuft ausschließlich täglich
+            // zu einer festen Uhrzeit.
             item {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    FilterChip(
-                        selected = uploadMode == "FIXED",
-                        onClick = {
-                            uploadMode = "FIXED"
-                            settings.uploadMode = "FIXED"
-                            AlarmScheduler(this@MainActivity).scheduleUpload()
-                        },
-                        label = { Text("Feste Uhrzeit") }
-                    )
-                    FilterChip(
-                        selected = uploadMode == "INTERVAL",
-                        onClick = {
-                            uploadMode = "INTERVAL"
-                            settings.uploadMode = "INTERVAL"
-                            AlarmScheduler(this@MainActivity).scheduleUpload()
-                        },
-                        label = { Text("Intervall") }
-                    )
-                }
-            }
-
-            if (uploadMode == "FIXED") {
-                item {
-                    Button(
-                        onClick = {
-                            TimePickerDialog(
-                                this@MainActivity,
-                                { _, h, m ->
-                                    smbUploadHour = h
-                                    smbUploadMinute = m
-                                    settings.smbUploadHour = h
-                                    settings.smbUploadMinute = m
-                                    AlarmScheduler(this@MainActivity).scheduleUpload()
-                                },
-                                smbUploadHour,
-                                smbUploadMinute,
-                                true
-                            ).show()
-                        }
-                    ) {
-                        Text("Uploadzeit %02d:%02d".format(smbUploadHour, smbUploadMinute))
-                    }
-                }
-            } else {
-                item {
-                    OutlinedTextField(
-                        value = uploadIntervalHours,
-                        onValueChange = { value ->
-                            uploadIntervalHours = value.filter(Char::isDigit)
-                            value.toIntOrNull()?.let {
-                                settings.uploadIntervalHours = it
+                Button(
+                    onClick = {
+                        TimePickerDialog(
+                            this@MainActivity,
+                            { _, h, m ->
+                                smbUploadHour = h
+                                smbUploadMinute = m
+                                settings.smbUploadHour = h
+                                settings.smbUploadMinute = m
                                 AlarmScheduler(this@MainActivity).scheduleUpload()
-                            }
-                        },
-                        label = { Text("Alle X Stunden hochladen") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                            },
+                            smbUploadHour,
+                            smbUploadMinute,
+                            true
+                        ).show()
+                    }
+                ) {
+                    Text("Uploadzeit %02d:%02d".format(smbUploadHour, smbUploadMinute))
                 }
             }
 
@@ -897,7 +871,7 @@ class MainActivity : ComponentActivity() {
             }
 
             item {
-                Divider(Modifier.padding(vertical = 4.dp))
+                HorizontalDivider(Modifier.padding(vertical = 4.dp))
                 Text("MQTT", style = MaterialTheme.typography.titleMedium)
             }
 
@@ -948,7 +922,7 @@ class MainActivity : ComponentActivity() {
                         lifecycleScope.launch {
                             try {
                                 withContext(Dispatchers.IO) {
-                                    de.example.timelapse.mqtt.MqttClientManager(this@MainActivity).connectAndDiscover()
+                                    MqttClientManager(this@MainActivity).connectAndDiscover()
                                 }
                                 discoveryStatus = "Discovery erfolgreich gesendet"
                             } catch (e: Exception) {
@@ -967,13 +941,13 @@ class MainActivity : ComponentActivity() {
             }
 
             item {
-                Divider(Modifier.padding(vertical = 4.dp))
+                HorizontalDivider(Modifier.padding(vertical = 4.dp))
                 Text("Zuverlässigkeit", style = MaterialTheme.typography.titleMedium)
                 Text(
                     "Damit geplante Aufnahmen/Uploads nicht vom System verzögert " +
-                        "oder unterdrückt werden, sollte die App von der Akku-" +
-                        "Optimierung ausgenommen werden (besonders wichtig bei " +
-                        "Samsung/Xiaomi/Huawei & Co).",
+                            "oder unterdrückt werden, sollte die App von der Akku-" +
+                            "Optimierung ausgenommen werden (besonders wichtig bei " +
+                            "Samsung/Xiaomi/Huawei & Co).",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -995,14 +969,7 @@ class MainActivity : ComponentActivity() {
                 }
                 Button(
                     enabled = !ignoringOptimizations.value,
-                    onClick = {
-                        startActivity(
-                            Intent(
-                                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                                android.net.Uri.parse("package:$packageName")
-                            )
-                        )
-                    }
+                    onClick = { requestIgnoreBatteryOptimizations() }
                 ) {
                     Text(
                         if (ignoringOptimizations.value) "Akku-Optimierung bereits deaktiviert"
@@ -1011,62 +978,82 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            item {
-                val alarmManager = remember { getSystemService(android.app.AlarmManager::class.java) }
-                val canScheduleExact = remember { mutableStateOf(alarmManager.canScheduleExactAlarms()) }
-                val lifecycleOwner3 = LocalLifecycleOwner.current
-                DisposableEffect(lifecycleOwner3) {
-                    val observer = LifecycleEventObserver { _, event ->
-                        if (event == Lifecycle.Event.ON_RESUME) {
-                            canScheduleExact.value = alarmManager.canScheduleExactAlarms()
+            // SCHEDULE_EXACT_ALARM permission management only exists from API 31
+            // onward; below that, the manifest-declared permission is always
+            // granted and there is nothing for the user to enable here.
+            if (Build.VERSION.SDK_INT >= 31) {
+                item {
+                    val alarmManager = remember { getSystemService(android.app.AlarmManager::class.java) }
+                    val canScheduleExact = remember { mutableStateOf(alarmManager.canScheduleExactAlarms()) }
+                    val lifecycleOwner3 = LocalLifecycleOwner.current
+                    DisposableEffect(lifecycleOwner3) {
+                        val observer = LifecycleEventObserver { _, event ->
+                            if (event == Lifecycle.Event.ON_RESUME) {
+                                canScheduleExact.value = alarmManager.canScheduleExactAlarms()
+                            }
                         }
+                        lifecycleOwner3.lifecycle.addObserver(observer)
+                        onDispose { lifecycleOwner3.lifecycle.removeObserver(observer) }
                     }
-                    lifecycleOwner3.lifecycle.addObserver(observer)
-                    onDispose { lifecycleOwner3.lifecycle.removeObserver(observer) }
-                }
-                Button(
-                    enabled = !canScheduleExact.value,
-                    onClick = {
-                        startActivity(
-                            Intent(
-                                Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
-                                android.net.Uri.parse("package:$packageName")
+                    Button(
+                        enabled = !canScheduleExact.value,
+                        onClick = {
+                            startActivity(
+                                Intent(
+                                    Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                                    "package:$packageName".toUri()
+                                )
                             )
+                        }
+                    ) {
+                        Text(
+                            if (canScheduleExact.value) "Alarm-Berechtigung bereits erteilt"
+                            else "Alarm-Berechtigung öffnen"
                         )
                     }
-                ) {
-                    Text(
-                        if (canScheduleExact.value) "Alarm-Berechtigung bereits erteilt"
-                        else "Alarm-Berechtigung öffnen"
-                    )
                 }
             }
 
             item {
-                var lastHeartbeat by remember { mutableStateOf(settings.lastHeartbeatAt) }
+                var lastCapture by remember { mutableLongStateOf(settings.lastCaptureAt) }
                 val lifecycleOwner2 = LocalLifecycleOwner.current
                 DisposableEffect(lifecycleOwner2) {
                     val observer = LifecycleEventObserver { _, event ->
-                        if (event == Lifecycle.Event.ON_RESUME) lastHeartbeat = settings.lastHeartbeatAt
+                        if (event == Lifecycle.Event.ON_RESUME) lastCapture = settings.lastCaptureAt
                     }
                     lifecycleOwner2.lifecycle.addObserver(observer)
                     onDispose { lifecycleOwner2.lifecycle.removeObserver(observer) }
                 }
                 Text(
-                    if (lastHeartbeat > 0)
-                        "Letzter Heartbeat: ${java.text.SimpleDateFormat("dd.MM. HH:mm:ss", java.util.Locale.GERMANY).format(java.util.Date(lastHeartbeat))} " +
-                            "(vor ${(System.currentTimeMillis() - lastHeartbeat) / 60000} Min.)"
-                    else "Noch kein Heartbeat ausgeführt",
+                    if (lastCapture > 0)
+                        "Letzte Aufnahme: ${java.text.SimpleDateFormat("dd.MM. HH:mm:ss", java.util.Locale.GERMANY).format(java.util.Date(lastCapture))} " +
+                                "(vor ${(System.currentTimeMillis() - lastCapture) / 60000} Min.)"
+                    else "Noch keine Aufnahme ausgeführt",
                     style = MaterialTheme.typography.bodySmall
                 )
                 Text(
-                    "Sollte sich stündlich aktualisieren, solange die App läuft (App " +
-                        "erneut öffnen, um den Wert hier zu aktualisieren). Bleibt er " +
-                        "über Stunden stehen, prüfe die Akku-Optimierung und die Alarm-" +
-                        "Berechtigung oben.",
+                    "Aktualisiert sich mit jeder geplanten Aufnahme, solange die App läuft " +
+                            "(App erneut öffnen, um den Wert hier zu aktualisieren). Bleibt er " +
+                            "über Stunden stehen, prüfe die Akku-Optimierung und die Alarm-" +
+                            "Berechtigung oben.",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
         }
+    }
+
+    // This app is an unattended background capture/upload tool, which is one of
+    // the accepted use cases for asking the user to exempt it from battery
+    // optimizations (Play policy requires this to be a deliberate,
+    // user-initiated action rather than something the app does silently -
+    // which is exactly what the "Akku-Optimierung deaktivieren" button above is).
+    @SuppressLint("BatteryLife")
+    private fun requestIgnoreBatteryOptimizations() {
+        startActivity(
+            Intent(
+                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                "package:$packageName".toUri()
+            )
+        )
     }
 }

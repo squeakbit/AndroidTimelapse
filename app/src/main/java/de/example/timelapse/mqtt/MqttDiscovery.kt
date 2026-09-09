@@ -24,14 +24,16 @@ class MqttDiscovery(private val mqtt: MqttClientManager, private val s: Settings
         sensor("last_upload", "Letzter Upload", "$base/last_upload", "mdi:cloud-upload-outline", "timestamp")
         sensor("last_upload_count", "Letzter Upload Anzahl", "$base/last_upload_count", "mdi:upload", null)
         sensor("last_upload_failed", "Letzter Upload Fehler", "$base/last_upload_failed", "mdi:alert-circle-outline", null)
-        sensor("last_heartbeat", "Letzter Heartbeat", "$base/last_heartbeat", "mdi:heart-pulse", "timestamp")
         sensor("last_error", "Letzter Fehler", "$base/last_error", "mdi:alert", null)
         publishState()
     }
 
     /**
      * Publishes the current sensor values (retained) so entities show real
-     * data right away instead of "unbekannt" until the next heartbeat.
+     * data right away instead of "unbekannt" until the next scheduled
+     * capture or upload. There is no separate heartbeat: every scheduled
+     * capture calls this too (see CameraForegroundService.capture()), which
+     * already proves the app is alive via last_photo/battery/etc. updating.
      */
     suspend fun publishState() {
         try {
@@ -41,9 +43,6 @@ class MqttDiscovery(private val mqtt: MqttClientManager, private val s: Settings
             mqtt.publish("$base/photos_uploaded", dao.getUploadedCount().toString())
             dao.getLastPhoto()?.let {
                 mqtt.publish("$base/last_photo", java.time.Instant.ofEpochMilli(it.capturedAt).toString())
-            }
-            if (s.lastHeartbeatAt > 0) {
-                mqtt.publish("$base/last_heartbeat", java.time.Instant.ofEpochMilli(s.lastHeartbeatAt).toString())
             }
         } catch (_: Throwable) {
             // Best-effort: discovery/config publishing should still succeed

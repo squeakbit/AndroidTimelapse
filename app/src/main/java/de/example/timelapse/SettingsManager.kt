@@ -46,13 +46,6 @@ class SettingsManager(context: Context) {
     var smbUploadMinute: Int
         get() = p.getInt("smb_upload_minute", 0)
         set(v) = p.edit().putInt("smb_upload_minute", v.coerceIn(0, 59)).apply()
-    /** "FIXED" = daily at smbUploadHour:smbUploadMinute, "INTERVAL" = every uploadIntervalHours. */
-    var uploadMode: String
-        get() = p.getString("upload_mode", "FIXED") ?: "FIXED"
-        set(v) = p.edit().putString("upload_mode", v).apply()
-    var uploadIntervalHours: Int
-        get() = p.getInt("upload_interval_hours", 4)
-        set(v) = p.edit().putInt("upload_interval_hours", v.coerceIn(1, 24)).apply()
     var deleteAfterUpload: Boolean
         get() = p.getBoolean("delete_after_upload", false)
         set(v) = p.edit().putBoolean("delete_after_upload", v).apply()
@@ -104,12 +97,9 @@ class SettingsManager(context: Context) {
     var windowEndMinute: Int
         get() = p.getInt("window_end_minute", 0)
         set(v) = p.edit().putInt("window_end_minute", v.coerceIn(0, 59)).apply()
-    /** Wall-clock time (epoch ms) of the last successfully completed heartbeat sync. */
-    var lastHeartbeatAt: Long
-        get() = p.getLong("last_heartbeat_at", 0L)
-        set(v) = p.edit().putLong("last_heartbeat_at", v).apply()
     /** Wall-clock time (epoch ms) of the last capture attempt (success or failure), used by
-     *  CameraForegroundService's internal loop to know when the next one is due. */
+     *  CameraForegroundService's internal loop to know when the next one is due, and also
+     *  shown in the UI as a general "still alive" indicator (there is no separate heartbeat). */
     var lastCaptureAt: Long
         get() = p.getLong("last_capture_at", 0L)
         set(v) = p.edit().putLong("last_capture_at", v).apply()
