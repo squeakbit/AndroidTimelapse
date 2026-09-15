@@ -14,6 +14,13 @@ import android.view.Surface
  * frame - it stays open until [stop] is called. Only one instance should be
  * active at a time since the camera is an exclusive resource and would
  * otherwise conflict with scheduled timelapse captures.
+ *
+ * Owns a background [HandlerThread] for the lifetime of the instance. Call
+ * [release] once this controller itself is no longer needed (e.g. when the
+ * screen showing the live preview is disposed) so that thread is actually
+ * stopped - [stop] alone only tears down the camera session, not the
+ * thread, so a controller left un-released would leak one thread per
+ * instance (e.g. one per screen rotation, since that recreates it).
  */
 class CameraPreviewController(private val context: Context) {
     private val thread = HandlerThread("CameraPreview").apply { start() }
@@ -76,5 +83,14 @@ class CameraPreviewController(private val context: Context) {
         try { device?.close() } catch (_: Throwable) {}
         session = null
         device = null
+    }
+
+    /**
+     * Stops the background thread. Call once, when this controller instance
+     * itself is being discarded (not on every [stop]) - see class-level doc.
+     */
+    fun release() {
+        stop()
+        thread.quitSafely()
     }
 }

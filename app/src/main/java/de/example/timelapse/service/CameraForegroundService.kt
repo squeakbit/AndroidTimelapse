@@ -80,18 +80,38 @@ class CameraForegroundService:Service(){
   return elapsed>=s.captureIntervalMinutes*60_000L
  }
 
+ /**
+  * Resolves the configured camera(s) (single camera, or all front/all back)
+  * and captures with each one in turn. A failure on one camera is skipped
+  * rather than aborting the remaining cameras, so e.g. one disconnected
+  * external camera doesn't block the others. Per-camera failures are
+  * collected and reported in a single MQTT round-trip after the loop
+  * (instead of one connect/publish/disconnect per failed camera), since a
+  * capture cycle already opens a connection anyway to publish state below.
+  */
  private suspend fun capture(s:SettingsManager){
   s.lastCaptureAt=System.currentTimeMillis()
   if(s.timeWindowEnabled && !isWithinWindow(s))return
   try{
-   val id=PhotoCaptureHelper.resolveCameraId(this,s) ?: return
-   PhotoCaptureHelper.captureAndSave(this,id,s.cameraWidth,s.cameraHeight,s.jpegQuality)
-   // Publish all sensor states right away (not just on the daily upload)
-   // so Home Assistant reflects a real-time proof-of-life for scheduled
-   // capture, independent of whether the app's UI process is still alive.
-   // This is what replaces the old separate hourly heartbeat.
+   val cameras=PhotoCaptureHelper.resolveCameras(this,s)
+   if(cameras.isEmpty()){reportError("Keine passende Kamera gefunden");return}
+   val failures=mutableListOf<String>()
+   for(camera in cameras){
+    try{
+     PhotoCaptureHelper.captureAndSave(this,camera.id,s.cameraWidth,s.cameraHeight,s.jpegQuality,PhotoCaptureHelper.cameraLabel(camera))
+    }catch(t:Throwable){
+     android.util.Log.e("Timelapse","capture failed for camera ${camera.id}",t)
+     failures.add("${camera.id}: ${t.message ?: t.javaClass.simpleName}")
+    }
+   }
+   // Publishes all sensor states (and, if any camera failed above, the
+   // combined error) in one connection right away - not just on the daily
+   // upload - so Home Assistant reflects a real-time proof-of-life for
+   // scheduled capture, independent of whether the app's UI process is
+   // still alive. This is what replaces the old separate hourly heartbeat.
    try{
     val mqtt=de.example.timelapse.mqtt.MqttClientManager(this)
+    if(failures.isNotEmpty()) mqtt.publish("timelapse/${s.deviceId}/last_error","Aufnahme fehlgeschlagen: "+failures.joinToString("; "))
     de.example.timelapse.mqtt.MqttDiscovery(mqtt,s,this).publishState()
     mqtt.close()
    }catch(t:Throwable){android.util.Log.w("Timelapse","mqtt state publish failed",t)}

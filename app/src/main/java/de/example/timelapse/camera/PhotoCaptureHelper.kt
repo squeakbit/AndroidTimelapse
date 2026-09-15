@@ -2,6 +2,7 @@ package de.example.timelapse.camera
 
 import android.content.ContentValues
 import android.content.Context
+import android.hardware.camera2.CameraCharacteristics
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
@@ -20,28 +21,119 @@ import java.util.Locale
  * scheduled [de.example.timelapse.service.CameraForegroundService] and the
  * manual test mode in [de.example.timelapse.MainActivity] so both paths
  * behave identically.
+ *
+ * Filename scheme: "<cameraLabel>_<yyMMdd>-<seq>.jpg", e.g. "B0_260915-0000.jpg".
+ * - cameraLabel is a one-letter facing code (F/B/E/C) plus the raw Camera2
+ *   ID, e.g. "B0" for the back-facing camera with ID "0". This keeps
+ *   multiple cameras' output distinguishable even though they all write
+ *   into the same date folder (no per-camera subfolders) and even if all
+ *   files ever end up copied into one flat directory.
+ * - seq is a zero-padded 4-digit sequence number, counted separately per
+ *   camera label and reset to 0000 the first time that camera captures on
+ *   a new calendar day. This makes capture order within a day unambiguous
+ *   without needing a clock-time field in the filename at all (clock times
+ *   read awkwardly and add nothing once a per-camera sequence exists).
+ *   Four digits comfortably covers even a 1-minute capture interval run
+ *   for a full day (1440 shots) without wrapping around.
  */
 object PhotoCaptureHelper {
+    private const val COUNTER_PREFS = "capture_counters"
+
+    /** One-letter facing code used as the first character of a camera label. */
+    private fun facingCode(facing: Int?): String = when (facing) {
+        CameraCharacteristics.LENS_FACING_FRONT -> "F"
+        CameraCharacteristics.LENS_FACING_BACK -> "B"
+        CameraCharacteristics.LENS_FACING_EXTERNAL -> "E"
+        else -> "C"
+    }
+
+    /**
+     * Short, stable label like "B0" (back-facing, Camera2 ID "0") used in
+     * filenames, derived directly from an already-resolved [CameraInfo].
+     * Prefer this overload whenever the caller already has the camera list
+     * (e.g. from [resolveCameras]) to avoid a redundant camera enumeration -
+     * each [CameraRepository.list] call re-queries every camera's
+     * characteristics from the camera service.
+     */
+    fun cameraLabel(camera: CameraInfo): String = "${facingCode(camera.facing)}${camera.id}"
+
+    /**
+     * Convenience overload for callers that only have a camera ID and don't
+     * already have the camera list at hand. Re-enumerates all cameras to
+     * find the matching facing - prefer [cameraLabel] with a [CameraInfo]
+     * when possible.
+     */
+    suspend fun cameraLabel(context: Context, cameraId: String): String {
+        val facing = CameraRepository(context).list().firstOrNull { it.id == cameraId }?.facing
+        return "${facingCode(facing)}$cameraId"
+    }
+
+    /**
+     * Returns the next zero-padded 4-digit sequence number for [label] on
+     * [dateKey] ("yyMMdd"), persisted in SharedPreferences so it survives
+     * app/service restarts. Automatically resets to 0 the moment the stored
+     * date for this camera no longer matches [dateKey], i.e. on the first
+     * capture of a new day. Each camera label keeps its own independent
+     * counter, so e.g. front and back cameras both start at 0000 on a new
+     * day rather than sharing one running total.
+     *
+     * Not designed for concurrent calls for the *same* label from multiple
+     * threads at once - this app only ever captures sequentially (one
+     * camera at a time, awaited before the next), so that's not an issue
+     * here.
+     */
+    private fun nextSequence(context: Context, label: String, dateKey: String): Int {
+        val prefs = context.getSharedPreferences(COUNTER_PREFS, Context.MODE_PRIVATE)
+        val lastDate = prefs.getString("${label}_date", null)
+        val next = if (lastDate == dateKey) prefs.getInt("${label}_counter", 0) + 1 else 0
+        prefs.edit().putString("${label}_date", dateKey).putInt("${label}_counter", next).apply()
+        return next
+    }
+
     suspend fun captureAndSave(
         context: Context,
         cameraId: String,
         width: Int,
         height: Int,
-        jpegQuality: Int
+        jpegQuality: Int,
+        /**
+         * Pass this when the caller already resolved the camera list (e.g.
+         * via [resolveCameras]) to avoid a redundant camera enumeration just
+         * to figure out the label. If null, it's looked up from [cameraId]
+         * the more expensive way.
+         */
+        precomputedLabel: String? = null
     ): PhotoEntity {
-        val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
-        val nameFormat = SimpleDateFormat("HH-mm-ss-SSS", Locale.US)
-        val fileName = nameFormat.format(Date()) + ".jpg"
-        val date = dateFormat.format(Date())
+        val now = Date()
+        // Used for the MediaStore folder (Pictures/Timelapse/<date>/) - kept
+        // as a full, unambiguous date independent of the filename's shorter
+        // yyMMdd form.
+        val folderDateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+        // Used for the filename and as the day-boundary key for the
+        // per-camera sequence counter.
+        val dateKeyFormat = SimpleDateFormat("yyMMdd", Locale.US)
+
+        val folderDate = folderDateFormat.format(now)
+        val dateKey = dateKeyFormat.format(now)
+        val label = precomputedLabel ?: cameraLabel(context, cameraId)
+        val sequence = nextSequence(context, label, dateKey)
+        val fileName = "${label}_${dateKey}-${"%04d".format(sequence)}.jpg"
 
         val temp = File.createTempFile("capture-", ".jpg", context.cacheDir)
-        Camera2Capture(context).capture(cameraId, width, height, jpegQuality, temp)
+        // Single-use per capture - must be closed afterwards or its
+        // background thread leaks for the rest of the process lifetime.
+        val camera = Camera2Capture(context)
+        try {
+            camera.capture(cameraId, width, height, jpegQuality, temp)
+        } finally {
+            camera.close()
+        }
 
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
             put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
             if (Build.VERSION.SDK_INT >= 29) {
-                put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Timelapse/" + date)
+                put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Timelapse/" + folderDate)
                 put(MediaStore.Images.Media.IS_PENDING, 1)
             }
         }
@@ -75,8 +167,27 @@ object PhotoCaptureHelper {
         }
     }
 
-    /** Resolves the effective camera to use: explicit setting, else the first available. */
-    suspend fun resolveCameraId(context: Context, settings: SettingsManager): String? =
-        if (settings.cameraId.isNotBlank()) settings.cameraId
-        else CameraRepository(context).list().firstOrNull()?.id
+    /**
+     * Resolves which camera(s) a scheduled capture should use, based on
+     * [SettingsManager.captureMode]:
+     * - "single": genau die konfigurierte [SettingsManager.cameraId], sonst
+     *   die erste verfügbare Kamera als Fallback.
+     * - "all_front" / "all_back": alle aktuell erkannten Kameras, die in
+     *   diese Richtung zeigen (nacheinander aufzunehmen).
+     *
+     * Returns full [CameraInfo] (not just IDs) so callers can pass the
+     * facing straight into [cameraLabel] without re-enumerating cameras a
+     * second time per camera.
+     */
+    suspend fun resolveCameras(context: Context, settings: SettingsManager): List<CameraInfo> {
+        val cameras = CameraRepository(context).list()
+        return when (settings.captureMode) {
+            "all_front" -> cameras.filter { it.facing == CameraCharacteristics.LENS_FACING_FRONT }
+            "all_back" -> cameras.filter { it.facing == CameraCharacteristics.LENS_FACING_BACK }
+            else -> {
+                val id = settings.cameraId.takeIf { it.isNotBlank() } ?: cameras.firstOrNull()?.id
+                cameras.filter { it.id == id }
+            }
+        }
+    }
 }

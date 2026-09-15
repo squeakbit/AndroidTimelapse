@@ -28,6 +28,13 @@ class SettingsManager(context: Context) {
     var cameraId: String
         get() = p.getString("camera_id", "") ?: ""
         set(v) = p.edit().putString("camera_id", v).apply()
+    /** Wie PhotoCaptureHelper die Kamera(s) für eine geplante Aufnahme bestimmt:
+     *  "single"    -> nur [cameraId]
+     *  "all_front" -> alle aktuell erkannten Front-Kameras, nacheinander
+     *  "all_back"  -> alle aktuell erkannten Rück-Kameras, nacheinander */
+    var captureMode: String
+        get() = p.getString("capture_mode", "single") ?: "single"
+        set(v) = p.edit().putString("capture_mode", v).apply()
     var cameraWidth: Int
         get() = p.getInt("camera_width", 1920)
         set(v) = p.edit().putInt("camera_width", v).apply()

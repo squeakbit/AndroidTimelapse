@@ -13,6 +13,15 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
+/**
+ * Single-use: create a new instance per capture, call [capture] once, then
+ * [close]. Each instance owns a dedicated [HandlerThread] for the duration
+ * of one capture; without calling [close] afterwards that thread is never
+ * stopped, and since a fresh instance is created for every single photo
+ * (see [PhotoCaptureHelper.captureAndSave]), a long-running timelapse would
+ * otherwise leak one live thread per photo taken for the entire lifetime of
+ * the process.
+ */
 class Camera2Capture(private val context: Context) {
     private val thread = HandlerThread("Camera2Capture").apply { start() }
     private val handler = Handler(thread.looper)
@@ -23,7 +32,7 @@ class Camera2Capture(private val context: Context) {
         val chars = manager.getCameraCharacteristics(cameraId)
         val afModes = chars.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: intArrayOf()
         val supportsAf = afModes.contains(CameraCharacteristics.CONTROL_AF_MODE_AUTO) ||
-            afModes.contains(CameraCharacteristics.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                afModes.contains(CameraCharacteristics.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
 
         val latch = CountDownLatch(1)
         var ok = false
@@ -171,5 +180,14 @@ class Camera2Capture(private val context: Context) {
         }
         if (!ok && error != null) throw error!!
         return ok
+    }
+
+    /**
+     * Stops this instance's background thread. Must be called exactly once
+     * after [capture] returns (successfully or not) - see the class-level
+     * doc. Safe to call even if [capture] threw.
+     */
+    fun close() {
+        thread.quitSafely()
     }
 }

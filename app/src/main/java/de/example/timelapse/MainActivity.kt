@@ -7,6 +7,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.SurfaceTexture
+import android.hardware.camera2.CameraCharacteristics
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -104,7 +105,12 @@ class MainActivity : ComponentActivity() {
             val settings = SettingsManager(this@MainActivity)
             val (w, h) = previewCaptureSize(settings.cameraWidth, settings.cameraHeight)
             val temp = File.createTempFile("preview-", ".jpg", cacheDir)
-            Camera2Capture(this@MainActivity).capture(cameraId, w, h, 80, temp)
+            val camera = Camera2Capture(this@MainActivity)
+            try {
+                camera.capture(cameraId, w, h, 80, temp)
+            } finally {
+                camera.close()
+            }
             val bmp = BitmapFactory.decodeFile(temp.absolutePath)
             temp.delete()
             bmp
@@ -113,89 +119,34 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    @Composable
-    private fun AppRoot() {
-        var tab by remember { mutableIntStateOf(0) }
-        MaterialTheme {
-            Column(Modifier.fillMaxSize()) {
-                Text(
-                    "Android Timelapse",
-                    style = MaterialTheme.typography.headlineMedium,
-                    modifier = Modifier.padding(16.dp)
-                )
-                PrimaryTabRow(selectedTabIndex = tab) {
-                    Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Start") })
-                    Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Einstellungen") })
-                }
-                when (tab) {
-                    0 -> HomeTab()
-                    else -> SettingsTab()
-                }
-            }
+    private fun facingLabel(facing: Int): String = when (facing) {
+        0 -> "Front"
+        1 -> "Back"
+        2 -> "External"
+        else -> "Unbekannt"
+    }
+
+    private fun captureModeLabel(mode: String, singleCameraId: String, cameras: List<CameraInfo>): String = when (mode) {
+        "all_front" -> "Alle Front-Kameras (nacheinander)"
+        "all_back" -> "Alle Rück-Kameras (nacheinander)"
+        else -> {
+            val cam = cameras.firstOrNull { it.id == singleCameraId }
+            if (cam != null) "Einzelkamera: ${cam.id} (${facingLabel(cam.facing)})" else "Einzelkamera wählen"
         }
     }
 
-    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
-    private fun HomeTab() {
-        val settings = remember { SettingsManager(this) }
-        val previewController = remember { CameraPreviewController(this) }
+    private fun AppRoot() {
+        var tab by remember { mutableIntStateOf(0) }
 
-        var enabled by remember { mutableStateOf(settings.timelapseEnabled) }
-        var interval by remember { mutableStateOf(settings.captureIntervalMinutes.toString()) }
-
-        var cameras by remember { mutableStateOf(emptyList<CameraInfo>()) }
-        var selectedCameraId by remember { mutableStateOf(settings.cameraId) }
-        var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
-        var previewLoading by remember { mutableStateOf(false) }
+        // Die Kamera ist eine exklusive Ressource: Live-Vorschau (Kamera-Tab)
+        // und Testmodus (Start-Tab) dürfen nie gleichzeitig laufen, auch
+        // wenn sie jetzt auf getrennten Tabs liegen.
         var liveEnabled by remember { mutableStateOf(false) }
-        var textureSurface by remember { mutableStateOf<Surface?>(null) }
-
-        var windowEnabled by remember { mutableStateOf(settings.timeWindowEnabled) }
-        var windowStartHour by remember { mutableIntStateOf(settings.windowStartHour) }
-        var windowStartMinute by remember { mutableIntStateOf(settings.windowStartMinute) }
-        var windowEndHour by remember { mutableIntStateOf(settings.windowEndHour) }
-        var windowEndMinute by remember { mutableIntStateOf(settings.windowEndMinute) }
-
-        var uploadStatus by remember { mutableStateOf("") }
-        var uploading by remember { mutableStateOf(false) }
-
         var testModeEnabled by remember { mutableStateOf(false) }
-        var testIntervalSeconds by remember { mutableIntStateOf(10) }
-        var testShotsTaken by remember { mutableIntStateOf(0) }
-        var testStatus by remember { mutableStateOf("") }
-        val testModeMaxShots = 30
+        LaunchedEffect(liveEnabled) { if (liveEnabled) testModeEnabled = false }
+        LaunchedEffect(testModeEnabled) { if (testModeEnabled) liveEnabled = false }
 
-        LaunchedEffect(Unit) {
-            cameras = withContext(Dispatchers.IO) { CameraRepository(this@MainActivity).list() }
-            if (selectedCameraId.isBlank()) {
-                selectedCameraId = cameras.firstOrNull()?.id ?: ""
-                settings.cameraId = selectedCameraId
-            }
-        }
-
-        LaunchedEffect(selectedCameraId, liveEnabled) {
-            if (!liveEnabled && selectedCameraId.isNotBlank()) {
-                previewLoading = true
-                previewBitmap = capturePreview(selectedCameraId)
-                previewLoading = false
-            }
-        }
-
-        // (Re)starts the live preview whenever the switch, selected camera,
-        // or the TextureView's surface changes; stops it otherwise.
-        LaunchedEffect(liveEnabled, selectedCameraId, textureSurface) {
-            val surface = textureSurface
-            if (liveEnabled && surface != null && selectedCameraId.isNotBlank()) {
-                previewController.start(selectedCameraId, surface)
-            } else {
-                previewController.stop()
-            }
-        }
-
-        // Safety net: the camera is exclusive, so don't let a forgotten live
-        // preview or test mode block scheduled captures once the app is
-        // backgrounded.
         val lifecycleOwner = LocalLifecycleOwner.current
         DisposableEffect(lifecycleOwner) {
             val observer = LifecycleEventObserver { _, event ->
@@ -208,37 +159,90 @@ class MainActivity : ComponentActivity() {
             onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
         }
 
-        DisposableEffect(Unit) {
-            onDispose {
-                previewController.stop()
-                textureSurface?.release()
-                textureSurface = null
+        MaterialTheme {
+            Column(Modifier.fillMaxSize()) {
+                Text(
+                    "Android Timelapse",
+                    style = MaterialTheme.typography.headlineMedium,
+                    modifier = Modifier.padding(16.dp)
+                )
+                PrimaryTabRow(selectedTabIndex = tab) {
+                    Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Start") })
+                    Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Kamera") })
+                    Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("Einstellungen") })
+                }
+                when (tab) {
+                    0 -> HomeTab(testModeEnabled = testModeEnabled, onTestModeChange = { testModeEnabled = it })
+                    1 -> CameraTab(liveEnabled = liveEnabled, onLiveEnabledChange = { liveEnabled = it })
+                    else -> SettingsTab()
+                }
+            }
+        }
+    }
+
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    private fun HomeTab(testModeEnabled: Boolean, onTestModeChange: (Boolean) -> Unit) {
+        val settings = remember { SettingsManager(this) }
+
+        var enabled by remember { mutableStateOf(settings.timelapseEnabled) }
+        var interval by remember { mutableStateOf(settings.captureIntervalMinutes.toString()) }
+
+        var cameras by remember { mutableStateOf(emptyList<CameraInfo>()) }
+        var captureMode by remember { mutableStateOf(settings.captureMode) }
+        var singleCameraId by remember { mutableStateOf(settings.cameraId) }
+        var modeExpanded by remember { mutableStateOf(false) }
+
+        var windowEnabled by remember { mutableStateOf(settings.timeWindowEnabled) }
+        var windowStartHour by remember { mutableIntStateOf(settings.windowStartHour) }
+        var windowStartMinute by remember { mutableIntStateOf(settings.windowStartMinute) }
+        var windowEndHour by remember { mutableIntStateOf(settings.windowEndHour) }
+        var windowEndMinute by remember { mutableIntStateOf(settings.windowEndMinute) }
+
+        var uploadStatus by remember { mutableStateOf("") }
+        var uploading by remember { mutableStateOf(false) }
+
+        var testIntervalSeconds by remember { mutableIntStateOf(10) }
+        var testShotsTaken by remember { mutableIntStateOf(0) }
+        var testStatus by remember { mutableStateOf("") }
+        val testModeMaxShots = 30
+
+        LaunchedEffect(Unit) {
+            cameras = withContext(Dispatchers.IO) { CameraRepository(this@MainActivity).list() }
+            if (singleCameraId.isBlank()) {
+                singleCameraId = cameras.firstOrNull()?.id ?: ""
+                settings.cameraId = singleCameraId
             }
         }
 
-        // Captures a test photo and uploads it immediately (bypassing the
-        // normal schedule), pausing testIntervalSeconds between shots, up to
-        // a safety limit so it can't be forgotten running indefinitely.
-        LaunchedEffect(testModeEnabled, testIntervalSeconds, selectedCameraId) {
-            if (testModeEnabled && selectedCameraId.isNotBlank()) {
+        // Nimmt Testfotos mit exakt der oben konfigurierten Aufnahme-Kamera(s)
+        // auf und lädt sie sofort hoch - bypasst Intervall und Zeitfenster,
+        // bis zu einem Sicherheitslimit.
+        LaunchedEffect(testModeEnabled, testIntervalSeconds) {
+            if (testModeEnabled) {
                 testShotsTaken = 0
                 while (testModeEnabled && testShotsTaken < testModeMaxShots) {
                     testStatus = "Nächstes Testfoto in ${testIntervalSeconds}s …"
                     delay(testIntervalSeconds.seconds)
                     if (!testModeEnabled) break
-                    testStatus = "Nehme Testfoto auf …"
+                    testStatus = "Nehme Testfoto(s) auf …"
                     val outcome = withContext(Dispatchers.IO) {
                         try {
                             val liveSettings = SettingsManager(this@MainActivity)
-                            PhotoCaptureHelper.captureAndSave(
-                                this@MainActivity,
-                                selectedCameraId,
-                                liveSettings.cameraWidth,
-                                liveSettings.cameraHeight,
-                                liveSettings.jpegQuality
-                            )
+                            val cameras = PhotoCaptureHelper.resolveCameras(this@MainActivity, liveSettings)
+                            if (cameras.isEmpty()) throw IllegalStateException("Keine Kamera verfügbar")
+                            for (camera in cameras) {
+                                PhotoCaptureHelper.captureAndSave(
+                                    this@MainActivity,
+                                    camera.id,
+                                    liveSettings.cameraWidth,
+                                    liveSettings.cameraHeight,
+                                    liveSettings.jpegQuality,
+                                    PhotoCaptureHelper.cameraLabel(camera)
+                                )
+                            }
                             val result = SmbUploader(this@MainActivity).uploadPendingPhotos()
-                            "OK – hochgeladen: ${result.uploaded}, fehlgeschlagen: ${result.failed}"
+                            "OK (${cameras.size} Kamera(s)) – hochgeladen: ${result.uploaded}, fehlgeschlagen: ${result.failed}"
                         } catch (t: Throwable) {
                             "Fehler: ${t.message ?: t.javaClass.simpleName}"
                         }
@@ -248,7 +252,7 @@ class MainActivity : ComponentActivity() {
                 }
                 if (testShotsTaken >= testModeMaxShots) {
                     testStatus += " — Sicherheitslimit erreicht, Testmodus automatisch beendet."
-                    testModeEnabled = false
+                    onTestModeChange(false)
                 }
             }
         }
@@ -299,113 +303,76 @@ class MainActivity : ComponentActivity() {
                         value.toIntOrNull()?.let { settings.captureIntervalMinutes = it }
                     },
                     label = { Text("Intervall Minuten") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.fillMaxWidth()
                 )
             }
 
             item {
-                Text("Kamera", style = MaterialTheme.typography.titleMedium)
+                HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                Text("Aufnahme-Kamera(s)", style = MaterialTheme.typography.titleMedium)
             }
 
             item {
-                val aspect = if (settings.cameraHeight > 0)
-                    settings.cameraWidth.toFloat() / settings.cameraHeight else 4f / 3f
-                Card(modifier = Modifier.fillMaxWidth().aspectRatio(aspect)) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        when {
-                            liveEnabled -> AndroidView(
-                                modifier = Modifier.fillMaxSize(),
-                                factory = { ctx ->
-                                    TextureView(ctx).apply {
-                                        surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                                            override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
-                                                val (pw, ph) = previewCaptureSize(settings.cameraWidth, settings.cameraHeight)
-                                                st.setDefaultBufferSize(pw, ph)
-                                                // Release any previously held Surface before replacing
-                                                // it, so nothing leaks if this fires again without an
-                                                // intervening onSurfaceTextureDestroyed.
-                                                textureSurface?.release()
-                                                textureSurface = Surface(st)
-                                            }
-                                            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
-                                            override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
-                                                textureSurface?.release()
-                                                textureSurface = null
-                                                return true
-                                            }
-                                            override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
-                                        }
-                                    }
+                ExposedDropdownMenuBox(
+                    expanded = modeExpanded,
+                    onExpandedChange = { modeExpanded = it }
+                ) {
+                    OutlinedTextField(
+                        value = captureModeLabel(captureMode, singleCameraId, cameras),
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Aufnahme-Modus") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = modeExpanded) },
+                        modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).fillMaxWidth()
+                    )
+                    ExposedDropdownMenu(
+                        expanded = modeExpanded,
+                        onDismissRequest = { modeExpanded = false }
+                    ) {
+                        cameras.forEach { camera ->
+                            DropdownMenuItem(
+                                text = { Text("Einzelkamera: ${camera.id} (${facingLabel(camera.facing)})") },
+                                onClick = {
+                                    captureMode = "single"
+                                    singleCameraId = camera.id
+                                    settings.captureMode = "single"
+                                    settings.cameraId = camera.id
+                                    modeExpanded = false
                                 }
                             )
-                            previewLoading -> CircularProgressIndicator()
-                            previewBitmap != null -> Image(
-                                bitmap = previewBitmap!!.asImageBitmap(),
-                                contentDescription = "Kameravorschau",
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop
+                        }
+                        if (cameras.any { it.facing == CameraCharacteristics.LENS_FACING_FRONT }) {
+                            DropdownMenuItem(
+                                text = { Text("Alle Front-Kameras (nacheinander)") },
+                                onClick = {
+                                    captureMode = "all_front"
+                                    settings.captureMode = "all_front"
+                                    modeExpanded = false
+                                }
                             )
-                            else -> Text("Keine Vorschau verfügbar")
+                        }
+                        if (cameras.any { it.facing == CameraCharacteristics.LENS_FACING_BACK }) {
+                            DropdownMenuItem(
+                                text = { Text("Alle Rück-Kameras (nacheinander)") },
+                                onClick = {
+                                    captureMode = "all_back"
+                                    settings.captureMode = "all_back"
+                                    modeExpanded = false
+                                }
+                            )
                         }
                     }
                 }
             }
 
-            item {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Live-Vorschau")
-                    Spacer(Modifier.weight(1f))
-                    Switch(
-                        checked = liveEnabled,
-                        onCheckedChange = {
-                            liveEnabled = it
-                            if (it) testModeEnabled = false
-                        }
-                    )
-                }
-            }
-
-            if (!liveEnabled) {
-                item {
-                    Button(
-                        enabled = !previewLoading && selectedCameraId.isNotBlank(),
-                        onClick = {
-                            lifecycleScope.launch {
-                                previewLoading = true
-                                previewBitmap = capturePreview(selectedCameraId)
-                                previewLoading = false
-                            }
-                        }
-                    ) {
-                        Text(if (previewLoading) "Nehme Vorschau auf …" else "Vorschau aktualisieren")
-                    }
-                }
-            } else {
+            if (captureMode != "single") {
                 item {
                     Text(
-                        "Live-Vorschau blockiert geplante Aufnahmen, solange sie läuft – " +
-                                "wird beim Verlassen der App automatisch beendet.",
+                        "Es wird pro Intervall nacheinander je ein Foto mit jeder passenden " +
+                                "Kamera aufgenommen (gleiche Auflösung/JPEG-Qualität für alle).",
                         style = MaterialTheme.typography.bodySmall
                     )
-                }
-            }
-
-            items(cameras, key = { it.id }) { camera ->
-                val facingText = when (camera.facing) {
-                    0 -> "Front"
-                    1 -> "Back"
-                    2 -> "External"
-                    else -> "Unbekannt"
-                }
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(
-                        selected = selectedCameraId == camera.id,
-                        onClick = {
-                            selectedCameraId = camera.id
-                            settings.cameraId = camera.id
-                        }
-                    )
-                    Text("${camera.id} ($facingText${if (camera.logicalMultiCamera) ", logical" else ""})")
                 }
             }
 
@@ -536,9 +503,10 @@ class MainActivity : ComponentActivity() {
                 HorizontalDivider(Modifier.padding(vertical = 4.dp))
                 Text("Testmodus", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "Ignoriert Intervall und Zeitfenster: nimmt in kurzem Abstand Testfotos auf " +
-                            "und lädt sie sofort per SMB hoch. Läuft nur im Vordergrund und stoppt " +
-                            "automatisch nach $testModeMaxShots Fotos.",
+                    "Ignoriert Intervall und Zeitfenster: nimmt in kurzem Abstand Testfotos mit " +
+                            "der oben gewählten Kamera-Konfiguration auf und lädt sie sofort per " +
+                            "SMB hoch. Läuft nur im Vordergrund und stoppt automatisch nach " +
+                            "$testModeMaxShots Fotos.",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -550,11 +518,8 @@ class MainActivity : ComponentActivity() {
                     Switch(
                         checked = testModeEnabled,
                         onCheckedChange = {
-                            testModeEnabled = it
-                            if (it) {
-                                liveEnabled = false
-                                testStatus = ""
-                            }
+                            onTestModeChange(it)
+                            if (it) testStatus = ""
                         }
                     )
                 }
@@ -573,6 +538,164 @@ class MainActivity : ComponentActivity() {
 
             if (testStatus.isNotBlank()) {
                 item { Text(testStatus) }
+            }
+        }
+    }
+
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    private fun CameraTab(liveEnabled: Boolean, onLiveEnabledChange: (Boolean) -> Unit) {
+        val settings = remember { SettingsManager(this) }
+        val previewController = remember { CameraPreviewController(this) }
+
+        var cameras by remember { mutableStateOf(emptyList<CameraInfo>()) }
+        var selectedCameraId by remember { mutableStateOf(settings.cameraId) }
+        var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
+        var previewLoading by remember { mutableStateOf(false) }
+        var textureSurface by remember { mutableStateOf<Surface?>(null) }
+
+        LaunchedEffect(Unit) {
+            cameras = withContext(Dispatchers.IO) { CameraRepository(this@MainActivity).list() }
+            if (selectedCameraId.isBlank()) {
+                selectedCameraId = cameras.firstOrNull()?.id ?: ""
+            }
+        }
+
+        LaunchedEffect(selectedCameraId, liveEnabled) {
+            if (!liveEnabled && selectedCameraId.isNotBlank()) {
+                previewLoading = true
+                previewBitmap = capturePreview(selectedCameraId)
+                previewLoading = false
+            }
+        }
+
+        // (Re)starts the live preview whenever the switch, selected camera,
+        // or the TextureView's surface changes; stops it otherwise.
+        LaunchedEffect(liveEnabled, selectedCameraId, textureSurface) {
+            val surface = textureSurface
+            if (liveEnabled && surface != null && selectedCameraId.isNotBlank()) {
+                previewController.start(selectedCameraId, surface)
+            } else {
+                previewController.stop()
+            }
+        }
+
+        DisposableEffect(Unit) {
+            onDispose {
+                // release() (not just stop()) since this composable, and
+                // with it this remembered controller instance, is being
+                // torn down entirely - stop() alone would leave its
+                // background thread running with nothing left to use it.
+                previewController.release()
+                textureSurface?.release()
+                textureSurface = null
+            }
+        }
+
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            item {
+                Text(
+                    "Zum Ansehen der erkannten Kameras und für eine Live-Vorschau. Welche " +
+                            "Kamera(s) den Timelapse tatsächlich aufnehmen, wird im Start-Tab " +
+                            "über \"Aufnahme-Modus\" festgelegt.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+
+            item {
+                val aspect = if (settings.cameraHeight > 0)
+                    settings.cameraWidth.toFloat() / settings.cameraHeight else 4f / 3f
+                Card(modifier = Modifier.fillMaxWidth().aspectRatio(aspect)) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        when {
+                            liveEnabled -> AndroidView(
+                                modifier = Modifier.fillMaxSize(),
+                                factory = { ctx ->
+                                    TextureView(ctx).apply {
+                                        surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                                            override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
+                                                val (pw, ph) = previewCaptureSize(settings.cameraWidth, settings.cameraHeight)
+                                                st.setDefaultBufferSize(pw, ph)
+                                                // Release any previously held Surface before replacing
+                                                // it, so nothing leaks if this fires again without an
+                                                // intervening onSurfaceTextureDestroyed.
+                                                textureSurface?.release()
+                                                textureSurface = Surface(st)
+                                            }
+                                            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
+                                            override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                                                textureSurface?.release()
+                                                textureSurface = null
+                                                return true
+                                            }
+                                            override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+                                        }
+                                    }
+                                }
+                            )
+                            previewLoading -> CircularProgressIndicator()
+                            previewBitmap != null -> Image(
+                                bitmap = previewBitmap!!.asImageBitmap(),
+                                contentDescription = "Kameravorschau",
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
+                            else -> Text("Keine Vorschau verfügbar")
+                        }
+                    }
+                }
+            }
+
+            item {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Live-Vorschau")
+                    Spacer(Modifier.weight(1f))
+                    Switch(checked = liveEnabled, onCheckedChange = onLiveEnabledChange)
+                }
+            }
+
+            if (!liveEnabled) {
+                item {
+                    Button(
+                        enabled = !previewLoading && selectedCameraId.isNotBlank(),
+                        onClick = {
+                            lifecycleScope.launch {
+                                previewLoading = true
+                                previewBitmap = capturePreview(selectedCameraId)
+                                previewLoading = false
+                            }
+                        }
+                    ) {
+                        Text(if (previewLoading) "Nehme Vorschau auf …" else "Vorschau aktualisieren")
+                    }
+                }
+            } else {
+                item {
+                    Text(
+                        "Live-Vorschau blockiert geplante Aufnahmen, solange sie läuft – " +
+                                "wird beim Verlassen der App automatisch beendet.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+
+            item {
+                HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                Text("Erkannte Kameras", style = MaterialTheme.typography.titleMedium)
+            }
+
+            items(cameras, key = { it.id }) { camera ->
+                val facingText = facingLabel(camera.facing)
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(
+                        selected = selectedCameraId == camera.id,
+                        onClick = { selectedCameraId = camera.id }
+                    )
+                    Text("${camera.id} ($facingText${if (camera.logicalMultiCamera) ", logical" else ""})")
+                }
             }
         }
     }
@@ -700,6 +823,7 @@ class MainActivity : ComponentActivity() {
                         value.toIntOrNull()?.let { settings.jpegQuality = it }
                     },
                     label = { Text("JPEG Qualität (1-100)") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.fillMaxWidth()
                 )
             }
