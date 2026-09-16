@@ -5,11 +5,13 @@ import android.content.*
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.*
+import android.util.Log
 import androidx.core.content.ContextCompat
 import de.example.timelapse.*
 import de.example.timelapse.camera.PhotoCaptureHelper
 import java.util.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 
 /**
  * Since Android 14, a foreground service of type "camera" cannot be
@@ -47,6 +49,7 @@ class CameraForegroundService:Service(){
  private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
  private var loopJob:Job?=null
  private var hasCameraPermission=false
+ private val nudgeChannel= Channel<Unit>(Channel.CONFLATED)
 
  override fun onCreate(){
   super.onCreate()
@@ -68,11 +71,13 @@ class CameraForegroundService:Service(){
  }
 
  override fun onStartCommand(i:Intent?,flags:Int,startId:Int):Int{
-  WakeLockHolder.release()
-  if(!hasCameraPermission){stopSelf(startId);return START_NOT_STICKY}
+  if(!hasCameraPermission){WakeLockHolder.release();stopSelf(startId);return START_NOT_STICKY}
   when(i?.action){
-   ACTION_STOP->{loopJob?.cancel();stopSelf();return START_NOT_STICKY}
-   else->startLoopIfNeeded()
+   ACTION_STOP->{WakeLockHolder.release();loopJob?.cancel();stopSelf();return START_NOT_STICKY}
+   else->{
+    startLoopIfNeeded()
+    nudgeChannel.trySend(Unit)
+   }
   }
   return START_STICKY
  }
@@ -87,16 +92,47 @@ class CameraForegroundService:Service(){
   * therefore the next due time) changed.
   */
  private fun startLoopIfNeeded(){
-  if(loopJob?.isActive==true)return
+  if(loopJob?.isActive==true){
+   return
+  }
   loopJob=scope.launch{
-   while(isActive){
-    val s=SettingsManager(this@CameraForegroundService)
-    if(!s.timelapseEnabled){
-     delay(IDLE_POLL_INTERVAL_MS)
-     continue
+   // While taking a photo (which can take 10-30s with AF and writing to
+   // storage), we MUST hold a service-level WakeLock. The AlarmReceiver
+   // only keeps us awake long enough to get here.
+   val pm = getSystemService(POWER_SERVICE) as PowerManager
+   val serviceLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Timelapse:ServiceLoop")
+   
+   try {
+    while(isActive){
+     val s=SettingsManager(this@CameraForegroundService)
+     if(!s.timelapseEnabled){
+      WakeLockHolder.release() 
+      delay(IDLE_POLL_INTERVAL_MS)
+      continue
+     }
+     
+     val waitMs=msUntilNextCapture(s)
+     if(waitMs<=5000L) { // 5s grace period
+      if (!serviceLock.isHeld) serviceLock.acquire(3 * 60_000L) // 3m lock for capture
+      try {
+       capture(s)
+      } finally {
+       WakeLockHolder.release()
+       if (serviceLock.isHeld) try { serviceLock.release() } catch(_: Throwable) {}
+      }
+     } else {
+      // Ensure wake-up alarm is set for the future.
+      try { AlarmScheduler(this@CameraForegroundService).scheduleNextCapture() } catch (_: Throwable) {}
+      WakeLockHolder.release()
+      if (serviceLock.isHeld) serviceLock.release()
+      
+      withTimeoutOrNull(waitMs.coerceAtMost(MAX_SINGLE_SLEEP_MS)) {
+       nudgeChannel.receive()
+      }
+     }
     }
-    val waitMs=msUntilNextCapture(s)
-    if(waitMs<=0L) capture(s) else delay(waitMs.coerceAtMost(MAX_SINGLE_SLEEP_MS))
+   } finally {
+    if (serviceLock.isHeld) serviceLock.release()
    }
   }
  }
@@ -117,7 +153,24 @@ class CameraForegroundService:Service(){
   * capture cycle already opens a connection anyway to publish state below.
   */
  private suspend fun capture(s:SettingsManager){
-  s.lastCaptureAt=System.currentTimeMillis()
+  try {
+   s.lastCaptureAt=System.currentTimeMillis()
+   AlarmScheduler(this).scheduleNextCapture()
+  } catch (t: Throwable) {
+   Log.e("Timelapse", "failed to schedule next capture", t)
+  }
+  
+  // Also schedule an absolute "safety" alarm 30 seconds after the intended
+  // interval, just in case the primary alarm fails to trigger the loop
+  // or the device reboots.
+  try {
+      val s2 = SettingsManager(this)
+      val safetyAt = s2.lastCaptureAt + (s2.captureIntervalMinutes * 60_000L) + 30_000L
+      if (safetyAt > System.currentTimeMillis()) {
+          AlarmScheduler(this).scheduleNextCapture() // Primary (exact)
+      }
+  } catch (_: Throwable) {}
+
   if(s.timeWindowEnabled && !isWithinWindow(s))return
   try{
    val cameras=PhotoCaptureHelper.resolveCameras(this,s)

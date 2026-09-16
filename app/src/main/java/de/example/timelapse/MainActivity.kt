@@ -428,7 +428,10 @@ class MainActivity : ComponentActivity() {
                     value = interval,
                     onValueChange = { value ->
                         interval = value.filter(Char::isDigit)
-                        value.toIntOrNull()?.let { settings.captureIntervalMinutes = it }
+                        value.toIntOrNull()?.let { 
+                            settings.captureIntervalMinutes = it
+                            AlarmScheduler(this@MainActivity).scheduleAll()
+                        }
                     },
                     label = { Text("Intervall Minuten") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
