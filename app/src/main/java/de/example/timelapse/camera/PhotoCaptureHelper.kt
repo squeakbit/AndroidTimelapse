@@ -3,24 +3,44 @@ package de.example.timelapse.camera
 import android.content.ContentValues
 import android.content.Context
 import android.hardware.camera2.CameraCharacteristics
+import android.media.MediaScannerConnection
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import de.example.timelapse.SettingsManager
 import de.example.timelapse.data.AppDatabase
 import de.example.timelapse.data.PhotoEntity
+import kotlinx.coroutines.Dispatchers
+import kotlin.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 /**
  * Captures a still photo with [cameraId] at [width]x[height]/[jpegQuality],
- * stores it under Pictures/Timelapse/<date>/ via MediaStore, and records it
- * in the local Room database as a pending upload. Used by both the
- * scheduled [de.example.timelapse.service.CameraForegroundService] and the
- * manual test mode in [de.example.timelapse.MainActivity] so both paths
- * behave identically.
+ * stores it under Pictures/Timelapse/<date>/, and records it in the local
+ * Room database as a pending upload. Used by both the scheduled
+ * [de.example.timelapse.service.CameraForegroundService] and the manual
+ * test mode in [de.example.timelapse.MainActivity] so both paths behave
+ * identically.
+ *
+ * Storage: on API 29+ (Android 10+), uses MediaStore's scoped-storage APIs
+ * (RELATIVE_PATH/IS_PENDING) - no storage permission needed since the app
+ * only touches media it created itself. Below API 29 (down to the app's
+ * minSdk 26, i.e. Android 8.0/8.1/9), scoped storage doesn't exist yet: the
+ * file is written directly under the public Pictures directory instead,
+ * which requires WRITE_EXTERNAL_STORAGE (declared in the manifest with
+ * maxSdkVersion=28, requested at runtime by MainActivity on those OS
+ * versions only) and is then registered with the media scanner so it (a)
+ * shows up in gallery apps and (b) gets a proper content:// URI - the rest
+ * of the app (SmbUploader's delete-after-upload, the camera tab's
+ * ghost-overlay reader) already assumes a content:// URI everywhere, and a
+ * bare file:// URI wouldn't support ContentResolver.delete().
  *
  * Filename scheme: "<cameraLabel>_<yyMMdd>-<seq>.jpg", e.g. "B0_260915-0000.jpg".
  * - cameraLabel is a one-letter facing code (F/B/E/C) plus the raw Camera2
@@ -31,10 +51,9 @@ import java.util.Locale
  * - seq is a zero-padded 4-digit sequence number, counted separately per
  *   camera label and reset to 0000 the first time that camera captures on
  *   a new calendar day. This makes capture order within a day unambiguous
- *   without needing a clock-time field in the filename at all (clock times
- *   read awkwardly and add nothing once a per-camera sequence exists).
- *   Four digits comfortably covers even a 1-minute capture interval run
- *   for a full day (1440 shots) without wrapping around.
+ *   without needing a clock-time field in the filename at all. Four digits
+ *   comfortably covers even a 1-minute capture interval run for a full day
+ *   (1440 shots) without wrapping around.
  */
 object PhotoCaptureHelper {
     private const val COUNTER_PREFS = "capture_counters"
@@ -113,9 +132,8 @@ object PhotoCaptureHelper {
         precomputedLabel: String? = null
     ): PhotoEntity {
         val now = Date()
-        // Used for the MediaStore folder (Pictures/Timelapse/<date>/) - kept
-        // as a full, unambiguous date independent of the filename's shorter
-        // yyMMdd form.
+        // Used for the Pictures/Timelapse/<date>/ folder - kept as a full,
+        // unambiguous date independent of the filename's shorter yyMMdd form.
         val folderDateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
         // Used for the filename and as the day-boundary key for the
         // per-camera sequence counter.
@@ -133,31 +151,11 @@ object PhotoCaptureHelper {
         val camera = Camera2Capture(context)
         try {
             camera.capture(cameraId, width, height, jpegQuality, temp)
-        } finally {
-            camera.close()
-        }
 
-        val values = ContentValues().apply {
-            put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
-            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-            if (Build.VERSION.SDK_INT >= 29) {
-                put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Timelapse/" + folderDate)
-                put(MediaStore.Images.Media.IS_PENDING, 1)
-            }
-        }
-
-        val resolver = context.contentResolver
-        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-            ?: throw IllegalStateException("MediaStore insert failed")
-
-        try {
-            resolver.openOutputStream(uri)?.use { out ->
-                temp.inputStream().use { input -> input.copyTo(out, 65536) }
-            } ?: throw IllegalStateException("Cannot open MediaStore output")
-
-            if (Build.VERSION.SDK_INT >= 29) {
-                val done = ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }
-                resolver.update(uri, done, null, null)
+            val uri = if (Build.VERSION.SDK_INT >= 29) {
+                saveViaScopedStorage(context, temp, fileName, folderDate)
+            } else {
+                saveViaLegacyStorage(context, temp, fileName, folderDate)
             }
 
             val entity = PhotoEntity(
@@ -167,11 +165,81 @@ object PhotoCaptureHelper {
             )
             val id = AppDatabase.getInstance(context).photoDao().insert(entity)
             return entity.copy(id = id)
+        } finally {
+            camera.close()
+            temp.delete()
+        }
+    }
+
+    /** API 29+: MediaStore scoped storage, no storage permission needed. */
+    private suspend fun saveViaScopedStorage(
+        context: Context,
+        temp: File,
+        fileName: String,
+        folderDate: String
+    ): Uri = withContext(Dispatchers.IO) {
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Timelapse/" + folderDate)
+            put(MediaStore.Images.Media.IS_PENDING, 1)
+        }
+        val resolver = context.contentResolver
+        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+            ?: throw IllegalStateException("MediaStore insert failed")
+        try {
+            resolver.openOutputStream(uri)?.use { out ->
+                temp.inputStream().use { input -> input.copyTo(out, 65536) }
+            } ?: throw IllegalStateException("Cannot open MediaStore output")
+            val done = ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }
+            resolver.update(uri, done, null, null)
+            uri
         } catch (t: Throwable) {
             resolver.delete(uri, null, null)
             throw t
-        } finally {
-            temp.delete()
+        }
+    }
+
+    /**
+     * API 26-28 (pre-scoped-storage): writes directly into the public
+     * Pictures directory (requires WRITE_EXTERNAL_STORAGE, see class doc),
+     * then hands it to the media scanner. The scan's callback provides a
+     * content:// URI equivalent to what MediaStore.insert() would give on
+     * newer APIs, so every other part of the app can treat both storage
+     * paths' results identically without caring which one ran.
+     */
+    @Suppress("DEPRECATION")
+    private suspend fun saveViaLegacyStorage(
+        context: Context,
+        temp: File,
+        fileName: String,
+        folderDate: String
+    ): Uri = withContext(Dispatchers.IO) {
+        val dir = File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
+            "Timelapse/$folderDate"
+        )
+        if (!dir.exists() && !dir.mkdirs() && !dir.exists()) {
+            throw IllegalStateException("Konnte Zielverzeichnis nicht anlegen: $dir")
+        }
+        val outFile = File(dir, fileName)
+        temp.inputStream().use { input ->
+            FileOutputStream(outFile).use { output -> input.copyTo(output, 65536) }
+        }
+        suspendCancellableCoroutine { cont ->
+            MediaScannerConnection.scanFile(
+                context,
+                arrayOf(outFile.absolutePath),
+                arrayOf("image/jpeg")
+            ) { _, scannedUri ->
+                // Falls back to a plain file:// URI if the scan somehow
+                // doesn't report one back (rare, but better than crashing
+                // the whole capture over a cosmetic gallery-indexing step).
+                // ContentResolver can still read a file:// URI directly,
+                // just not delete() it - a corner case only relevant to
+                // "nach Upload löschen" combined with this fallback.
+                if (cont.isActive) cont.resume(scannedUri ?: Uri.fromFile(outFile))
+            }
         }
     }
 

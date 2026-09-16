@@ -58,7 +58,13 @@ class CameraForegroundService:Service(){
    return
   }
   createChannel()
-  startForeground(10,notification(),ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
+  // The (id, notification, type) overload and FOREGROUND_SERVICE_TYPE_CAMERA
+  // itself only exist from API 29 onward; on API 26-28 (this app's minSdk is
+  // 26, for devices that can't be updated past Android 8) foreground service
+  // types don't exist at all yet, so the plain two-arg overload is the only
+  // one available there.
+  if(Build.VERSION.SDK_INT>=29) startForeground(10,notification(),ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
+  else startForeground(10,notification())
  }
 
  override fun onStartCommand(i:Intent?,flags:Int,startId:Int):Int{

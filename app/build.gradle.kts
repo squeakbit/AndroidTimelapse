@@ -19,7 +19,14 @@ android {
     compileSdk = 37
     defaultConfig {
         applicationId = "de.example.timelapse"
-        minSdk = 29
+        // 26 (Android 8.0) instead of 29: supports older devices that can't
+        // be updated. Below 29, MediaStore has no scoped storage (see
+        // PhotoCaptureHelper's legacy-storage branch) and foreground
+        // service types don't exist yet (see CameraForegroundService /
+        // DataSyncService's Build.VERSION.SDK_INT branches) - both are
+        // handled explicitly rather than relying on AndroidX to paper over
+        // the gap, since neither has a compat shim for this.
+        minSdk = 26
         targetSdk = 37
         versionCode = 1
         versionName = "1.0.0"

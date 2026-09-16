@@ -10,6 +10,12 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- Nur für API 26-28 nötig (vor Scoped Storage): ohne diese Berechtigung
+         schlägt das direkte Schreiben in Pictures/Timelapse/ auf diesen
+         älteren Geräten fehl. Ab API 29 wirkungslos/ignoriert, da dort der
+         Scoped-Storage-Pfad in PhotoCaptureHelper verwendet wird, der diese
+         Berechtigung nicht braucht. -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28"/>
 
     <application
         android:name=".TimelapseApplication"

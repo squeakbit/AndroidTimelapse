@@ -101,10 +101,21 @@ class MainActivity : ComponentActivity() {
 
     private val cameraPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    private val storagePermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         cameraPermission.launch(Manifest.permission.CAMERA)
+        // WRITE_EXTERNAL_STORAGE is only declared (maxSdkVersion=28) and only
+        // needed on API 26-28, where PhotoCaptureHelper's legacy-storage
+        // path writes directly into the public Pictures directory (no
+        // scoped storage yet on those OS versions). On API 29+ this
+        // permission doesn't even exist for the app anymore, so requesting
+        // it there would be a no-op at best and is skipped entirely.
+        if (Build.VERSION.SDK_INT < 29) {
+            storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        }
         // Self-heal scheduling on every launch: if alarms were ever lost
         // (fresh install instead of update, OS/OEM cleared them, etc.) the
         // app previously only re-armed them when a switch was toggled.
