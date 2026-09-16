@@ -25,16 +25,55 @@ class SettingsManager(context: Context) {
     var captureIntervalMinutes: Int
         get() = p.getInt("capture_interval_minutes", 5)
         set(v) = p.edit().putInt("capture_interval_minutes", v.coerceIn(1, 1440)).apply()
+    /**
+     * Legacy single-camera setting, kept only as a reference for the
+     * default-resolution picker in the Settings tab (which camera's list of
+     * supported sizes to show) and as a one-time migration fallback for
+     * [selectedCameraIds]. Actual capture camera selection is controlled
+     * entirely by [selectedCameraIds] now.
+     */
     var cameraId: String
         get() = p.getString("camera_id", "") ?: ""
         set(v) = p.edit().putString("camera_id", v).apply()
-    /** Wie PhotoCaptureHelper die Kamera(s) für eine geplante Aufnahme bestimmt:
-     *  "single"    -> nur [cameraId]
-     *  "all_front" -> alle aktuell erkannten Front-Kameras, nacheinander
-     *  "all_back"  -> alle aktuell erkannten Rück-Kameras, nacheinander */
-    var captureMode: String
-        get() = p.getString("capture_mode", "single") ?: "single"
-        set(v) = p.edit().putString("capture_mode", v).apply()
+    /**
+     * Freely chosen set of camera IDs to capture with on every scheduled
+     * cycle (in no particular guaranteed order - see
+     * [de.example.timelapse.camera.PhotoCaptureHelper.resolveCameras] for
+     * how this is intersected with the cameras actually present on the
+     * device). Any combination is allowed: one camera, a handful, or all of
+     * them.
+     *
+     * If nothing has ever been explicitly saved here yet, falls back to a
+     * single-element set containing the legacy [cameraId] (for users
+     * upgrading from the old single-camera setting), or an empty set if
+     * that's blank too - callers should treat an empty result as "nothing
+     * selected yet" and pick a sensible default themselves once the camera
+     * list is known.
+     */
+    var selectedCameraIds: Set<String>
+        get() {
+            val stored = p.getStringSet("selected_camera_ids", null)
+            if (stored != null) return HashSet(stored)
+            return cameraId.takeIf { it.isNotBlank() }?.let { setOf(it) } ?: emptySet()
+        }
+        set(v) = p.edit().putStringSet("selected_camera_ids", HashSet(v)).apply()
+    /**
+     * Optional per-camera resolution override, keyed by camera ID. Returns
+     * null if no override is set for this camera, meaning [cameraWidth]/
+     * [cameraHeight] (the global default) should be used instead.
+     */
+    fun cameraResolutionOverride(cameraId: String): Pair<Int, Int>? {
+        val w = p.getInt("camera_res_${cameraId}_w", -1)
+        val h = p.getInt("camera_res_${cameraId}_h", -1)
+        return if (w > 0 && h > 0) w to h else null
+    }
+    fun setCameraResolutionOverride(cameraId: String, width: Int, height: Int) {
+        p.edit().putInt("camera_res_${cameraId}_w", width).putInt("camera_res_${cameraId}_h", height).apply()
+    }
+    fun clearCameraResolutionOverride(cameraId: String) {
+        p.edit().remove("camera_res_${cameraId}_w").remove("camera_res_${cameraId}_h").apply()
+    }
+    /** Default resolution used for any selected camera without its own [cameraResolutionOverride]. */
     var cameraWidth: Int
         get() = p.getInt("camera_width", 1920)
         set(v) = p.edit().putInt("camera_width", v).apply()

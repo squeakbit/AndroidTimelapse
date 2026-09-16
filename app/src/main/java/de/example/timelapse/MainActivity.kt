@@ -17,8 +17,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -103,7 +105,8 @@ class MainActivity : ComponentActivity() {
     private suspend fun capturePreview(cameraId: String): Bitmap? = withContext(Dispatchers.IO) {
         try {
             val settings = SettingsManager(this@MainActivity)
-            val (w, h) = previewCaptureSize(settings.cameraWidth, settings.cameraHeight)
+            val (rw, rh) = PhotoCaptureHelper.resolveResolution(settings, cameraId)
+            val (w, h) = previewCaptureSize(rw, rh)
             val temp = File.createTempFile("preview-", ".jpg", cacheDir)
             val camera = Camera2Capture(this@MainActivity)
             try {
@@ -124,15 +127,6 @@ class MainActivity : ComponentActivity() {
         1 -> "Back"
         2 -> "External"
         else -> "Unbekannt"
-    }
-
-    private fun captureModeLabel(mode: String, singleCameraId: String, cameras: List<CameraInfo>): String = when (mode) {
-        "all_front" -> "Alle Front-Kameras (nacheinander)"
-        "all_back" -> "Alle Rück-Kameras (nacheinander)"
-        else -> {
-            val cam = cameras.firstOrNull { it.id == singleCameraId }
-            if (cam != null) "Einzelkamera: ${cam.id} (${facingLabel(cam.facing)})" else "Einzelkamera wählen"
-        }
     }
 
     @Composable
@@ -180,6 +174,76 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * One row in the "Aufnahme-Kameras" checklist: a checkbox to include this
+     * camera in the capture set, plus - only while checked and only if the
+     * camera reports supported sizes - an optional per-camera resolution
+     * dropdown. Picking "Standard" clears the override so this camera goes
+     * back to using the global default resolution from the Settings tab.
+     */
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    private fun CameraSelectionRow(
+        camera: CameraInfo,
+        checked: Boolean,
+        onCheckedChange: (Boolean) -> Unit,
+        settings: SettingsManager
+    ) {
+        var resExpanded by remember(camera.id) { mutableStateOf(false) }
+        var override by remember(camera.id) { mutableStateOf(settings.cameraResolutionOverride(camera.id)) }
+        val defaultLabel = "${settings.cameraWidth} × ${settings.cameraHeight}"
+        val currentLabel = override?.let { "${it.first} × ${it.second}" } ?: "Standard ($defaultLabel)"
+
+        Column(Modifier.fillMaxWidth()) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = checked, onCheckedChange = onCheckedChange)
+                Text(
+                    "${camera.id} (${facingLabel(camera.facing)}${if (camera.logicalMultiCamera) ", logical" else ""})",
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            if (checked && camera.sizes.isNotEmpty()) {
+                ExposedDropdownMenuBox(
+                    expanded = resExpanded,
+                    onExpandedChange = { resExpanded = it },
+                    modifier = Modifier.padding(start = 40.dp, end = 8.dp, bottom = 4.dp)
+                ) {
+                    OutlinedTextField(
+                        value = currentLabel,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Auflösung") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = resExpanded) },
+                        modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).fillMaxWidth()
+                    )
+                    ExposedDropdownMenu(
+                        expanded = resExpanded,
+                        onDismissRequest = { resExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Standard ($defaultLabel)") },
+                            onClick = {
+                                settings.clearCameraResolutionOverride(camera.id)
+                                override = null
+                                resExpanded = false
+                            }
+                        )
+                        camera.sizes.forEach { size ->
+                            DropdownMenuItem(
+                                text = { Text(size.toString()) },
+                                onClick = {
+                                    settings.setCameraResolutionOverride(camera.id, size.width, size.height)
+                                    override = size.width to size.height
+                                    resExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun HomeTab(testModeEnabled: Boolean, onTestModeChange: (Boolean) -> Unit) {
@@ -189,9 +253,7 @@ class MainActivity : ComponentActivity() {
         var interval by remember { mutableStateOf(settings.captureIntervalMinutes.toString()) }
 
         var cameras by remember { mutableStateOf(emptyList<CameraInfo>()) }
-        var captureMode by remember { mutableStateOf(settings.captureMode) }
-        var singleCameraId by remember { mutableStateOf(settings.cameraId) }
-        var modeExpanded by remember { mutableStateOf(false) }
+        var selectedIds by remember { mutableStateOf(settings.selectedCameraIds) }
 
         var windowEnabled by remember { mutableStateOf(settings.timeWindowEnabled) }
         var windowStartHour by remember { mutableIntStateOf(settings.windowStartHour) }
@@ -209,13 +271,17 @@ class MainActivity : ComponentActivity() {
 
         LaunchedEffect(Unit) {
             cameras = withContext(Dispatchers.IO) { CameraRepository(this@MainActivity).list() }
-            if (singleCameraId.isBlank()) {
-                singleCameraId = cameras.firstOrNull()?.id ?: ""
-                settings.cameraId = singleCameraId
+            if (selectedIds.isEmpty() && cameras.isNotEmpty()) {
+                // Nothing persisted yet (fresh install, and the
+                // SettingsManager migration fallback didn't find an old
+                // single-camera setting either) - default to the first
+                // detected camera rather than leaving the selection empty.
+                selectedIds = setOf(cameras.first().id)
+                settings.selectedCameraIds = selectedIds
             }
         }
 
-        // Nimmt Testfotos mit exakt der oben konfigurierten Aufnahme-Kamera(s)
+        // Nimmt Testfotos mit exakt der oben ausgewählten Kamera-Konfiguration
         // auf und lädt sie sofort hoch - bypasst Intervall und Zeitfenster,
         // bis zu einem Sicherheitslimit.
         LaunchedEffect(testModeEnabled, testIntervalSeconds) {
@@ -229,20 +295,21 @@ class MainActivity : ComponentActivity() {
                     val outcome = withContext(Dispatchers.IO) {
                         try {
                             val liveSettings = SettingsManager(this@MainActivity)
-                            val cameras = PhotoCaptureHelper.resolveCameras(this@MainActivity, liveSettings)
-                            if (cameras.isEmpty()) throw IllegalStateException("Keine Kamera verfügbar")
-                            for (camera in cameras) {
+                            val resolvedCameras = PhotoCaptureHelper.resolveCameras(this@MainActivity, liveSettings)
+                            if (resolvedCameras.isEmpty()) throw IllegalStateException("Keine Kamera verfügbar")
+                            for (camera in resolvedCameras) {
+                                val (w, h) = PhotoCaptureHelper.resolveResolution(liveSettings, camera.id)
                                 PhotoCaptureHelper.captureAndSave(
                                     this@MainActivity,
                                     camera.id,
-                                    liveSettings.cameraWidth,
-                                    liveSettings.cameraHeight,
+                                    w,
+                                    h,
                                     liveSettings.jpegQuality,
                                     PhotoCaptureHelper.cameraLabel(camera)
                                 )
                             }
                             val result = SmbUploader(this@MainActivity).uploadPendingPhotos()
-                            "OK (${cameras.size} Kamera(s)) – hochgeladen: ${result.uploaded}, fehlgeschlagen: ${result.failed}"
+                            "OK (${resolvedCameras.size} Kamera(s)) – hochgeladen: ${result.uploaded}, fehlgeschlagen: ${result.failed}"
                         } catch (t: Throwable) {
                             "Fehler: ${t.message ?: t.javaClass.simpleName}"
                         }
@@ -270,6 +337,13 @@ class MainActivity : ComponentActivity() {
                         onCheckedChange = {
                             enabled = it
                             settings.timelapseEnabled = it
+                            if (it) {
+                                // Erzwingt eine sofortige erste Aufnahme beim Einschalten,
+                                // statt bis zum Ablauf des vollen Intervalls zu warten -
+                                // relevant wenn zuvor schon mal aufgenommen wurde (sonst
+                                // steht in lastCaptureAt noch ein "echter" Zeitstempel).
+                                settings.lastCaptureAt = 0L
+                            }
                             AlarmScheduler(this@MainActivity).scheduleAll()
                             if (it) {
                                 ensureCameraServiceRunning()
@@ -310,67 +384,66 @@ class MainActivity : ComponentActivity() {
 
             item {
                 HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                Text("Aufnahme-Kamera(s)", style = MaterialTheme.typography.titleMedium)
+                Text("Aufnahme-Kameras", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Beliebig viele Kameras auswählen - sie nehmen pro Zyklus " +
+                            "nacheinander je ein Foto auf. Optional pro Kamera eine " +
+                            "eigene Auflösung; ohne Auswahl gilt die Standard-" +
+                            "Auflösung aus den Einstellungen.",
+                    style = MaterialTheme.typography.bodySmall
+                )
             }
 
-            item {
-                ExposedDropdownMenuBox(
-                    expanded = modeExpanded,
-                    onExpandedChange = { modeExpanded = it }
-                ) {
-                    OutlinedTextField(
-                        value = captureModeLabel(captureMode, singleCameraId, cameras),
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("Aufnahme-Modus") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = modeExpanded) },
-                        modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).fillMaxWidth()
-                    )
-                    ExposedDropdownMenu(
-                        expanded = modeExpanded,
-                        onDismissRequest = { modeExpanded = false }
+            if (cameras.size > 1) {
+                item {
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        cameras.forEach { camera ->
-                            DropdownMenuItem(
-                                text = { Text("Einzelkamera: ${camera.id} (${facingLabel(camera.facing)})") },
-                                onClick = {
-                                    captureMode = "single"
-                                    singleCameraId = camera.id
-                                    settings.captureMode = "single"
-                                    settings.cameraId = camera.id
-                                    modeExpanded = false
-                                }
-                            )
-                        }
+                        TextButton(onClick = {
+                            selectedIds = cameras.map { it.id }.toSet()
+                            settings.selectedCameraIds = selectedIds
+                        }) { Text("Alle") }
+                        TextButton(onClick = {
+                            selectedIds = emptySet()
+                            settings.selectedCameraIds = selectedIds
+                        }) { Text("Keine") }
                         if (cameras.any { it.facing == CameraCharacteristics.LENS_FACING_FRONT }) {
-                            DropdownMenuItem(
-                                text = { Text("Alle Front-Kameras (nacheinander)") },
-                                onClick = {
-                                    captureMode = "all_front"
-                                    settings.captureMode = "all_front"
-                                    modeExpanded = false
-                                }
-                            )
+                            TextButton(onClick = {
+                                selectedIds = cameras.filter { it.facing == CameraCharacteristics.LENS_FACING_FRONT }
+                                    .map { it.id }.toSet()
+                                settings.selectedCameraIds = selectedIds
+                            }) { Text("Alle Front") }
                         }
                         if (cameras.any { it.facing == CameraCharacteristics.LENS_FACING_BACK }) {
-                            DropdownMenuItem(
-                                text = { Text("Alle Rück-Kameras (nacheinander)") },
-                                onClick = {
-                                    captureMode = "all_back"
-                                    settings.captureMode = "all_back"
-                                    modeExpanded = false
-                                }
-                            )
+                            TextButton(onClick = {
+                                selectedIds = cameras.filter { it.facing == CameraCharacteristics.LENS_FACING_BACK }
+                                    .map { it.id }.toSet()
+                                settings.selectedCameraIds = selectedIds
+                            }) { Text("Alle Back") }
                         }
                     }
                 }
             }
 
-            if (captureMode != "single") {
+            items(cameras, key = { "select_${it.id}" }) { camera ->
+                CameraSelectionRow(
+                    camera = camera,
+                    checked = selectedIds.contains(camera.id),
+                    onCheckedChange = { checked ->
+                        selectedIds = if (checked) selectedIds + camera.id else selectedIds - camera.id
+                        settings.selectedCameraIds = selectedIds
+                    },
+                    settings = settings
+                )
+            }
+
+            if (cameras.isNotEmpty() && selectedIds.isEmpty()) {
                 item {
                     Text(
-                        "Es wird pro Intervall nacheinander je ein Foto mit jeder passenden " +
-                                "Kamera aufgenommen (gleiche Auflösung/JPEG-Qualität für alle).",
+                        "Keine Kamera ausgewählt - es wird automatisch die erste " +
+                                "verfügbare Kamera verwendet, bis mindestens eine " +
+                                "Kamera ausgewählt ist.",
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
@@ -561,6 +634,10 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        val (previewWidth, previewHeight) = if (selectedCameraId.isNotBlank())
+            PhotoCaptureHelper.resolveResolution(settings, selectedCameraId)
+        else settings.cameraWidth to settings.cameraHeight
+
         LaunchedEffect(selectedCameraId, liveEnabled) {
             if (!liveEnabled && selectedCameraId.isNotBlank()) {
                 previewLoading = true
@@ -600,14 +677,13 @@ class MainActivity : ComponentActivity() {
                 Text(
                     "Zum Ansehen der erkannten Kameras und für eine Live-Vorschau. Welche " +
                             "Kamera(s) den Timelapse tatsächlich aufnehmen, wird im Start-Tab " +
-                            "über \"Aufnahme-Modus\" festgelegt.",
+                            "unter \"Aufnahme-Kameras\" festgelegt.",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
 
             item {
-                val aspect = if (settings.cameraHeight > 0)
-                    settings.cameraWidth.toFloat() / settings.cameraHeight else 4f / 3f
+                val aspect = if (previewHeight > 0) previewWidth.toFloat() / previewHeight else 4f / 3f
                 Card(modifier = Modifier.fillMaxWidth().aspectRatio(aspect)) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         when {
@@ -617,7 +693,7 @@ class MainActivity : ComponentActivity() {
                                     TextureView(ctx).apply {
                                         surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                                             override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
-                                                val (pw, ph) = previewCaptureSize(settings.cameraWidth, settings.cameraHeight)
+                                                val (pw, ph) = previewCaptureSize(previewWidth, previewHeight)
                                                 st.setDefaultBufferSize(pw, ph)
                                                 // Release any previously held Surface before replacing
                                                 // it, so nothing leaks if this fires again without an
@@ -758,7 +834,7 @@ class MainActivity : ComponentActivity() {
             item { Text("Speicherort: Pictures/Timelapse/<Datum>/") }
 
             item {
-                val selectedCamera = cameras.firstOrNull { it.id == settings.cameraId }
+                val selectedCamera = cameras.firstOrNull { it.id == settings.cameraId } ?: cameras.firstOrNull()
                 var resolutionExpanded by remember { mutableStateOf(false) }
                 var selectedSize by remember(selectedCamera) {
                     mutableStateOf(
@@ -767,6 +843,7 @@ class MainActivity : ComponentActivity() {
                     )
                 }
                 LaunchedEffect(selectedCamera) {
+                    if (selectedCamera != null) settings.cameraId = selectedCamera.id
                     if (selectedCamera != null &&
                         selectedCamera.sizes.none { it.width == settings.cameraWidth && it.height == settings.cameraHeight }
                     ) {
@@ -777,6 +854,10 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 Column {
+                    Text(
+                        "Standard-Auflösung für Kameras ohne eigene Auswahl (siehe Start-Tab).",
+                        style = MaterialTheme.typography.bodySmall
+                    )
                     ExposedDropdownMenuBox(
                         expanded = resolutionExpanded,
                         onExpandedChange = { resolutionExpanded = it }
@@ -785,7 +866,7 @@ class MainActivity : ComponentActivity() {
                             value = selectedSize?.toString() ?: "Keine Auflösung erkannt",
                             onValueChange = {},
                             readOnly = true,
-                            label = { Text("Auflösung") },
+                            label = { Text("Standard-Auflösung") },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = resolutionExpanded) },
                             modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).fillMaxWidth()
                         )
@@ -808,7 +889,7 @@ class MainActivity : ComponentActivity() {
                     }
                     if (selectedCamera == null) {
                         Text(
-                            "Kamera wird geladen – bitte kurz warten oder zuerst im Start-Tab eine Kamera auswählen.",
+                            "Kamera wird geladen – bitte kurz warten.",
                             style = MaterialTheme.typography.bodySmall
                         )
                     }

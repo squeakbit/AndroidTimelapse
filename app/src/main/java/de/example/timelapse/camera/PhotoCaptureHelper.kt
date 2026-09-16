@@ -69,6 +69,14 @@ object PhotoCaptureHelper {
     }
 
     /**
+     * Resolves the effective capture resolution for [cameraId]: its own
+     * override if one was set (see [SettingsManager.cameraResolutionOverride]),
+     * otherwise the global default resolution.
+     */
+    fun resolveResolution(settings: SettingsManager, cameraId: String): Pair<Int, Int> =
+        settings.cameraResolutionOverride(cameraId) ?: (settings.cameraWidth to settings.cameraHeight)
+
+    /**
      * Returns the next zero-padded 4-digit sequence number for [label] on
      * [dateKey] ("yyMMdd"), persisted in SharedPreferences so it survives
      * app/service restarts. Automatically resets to 0 the moment the stored
@@ -168,12 +176,14 @@ object PhotoCaptureHelper {
     }
 
     /**
-     * Resolves which camera(s) a scheduled capture should use, based on
-     * [SettingsManager.captureMode]:
-     * - "single": genau die konfigurierte [SettingsManager.cameraId], sonst
-     *   die erste verfügbare Kamera als Fallback.
-     * - "all_front" / "all_back": alle aktuell erkannten Kameras, die in
-     *   diese Richtung zeigen (nacheinander aufzunehmen).
+     * Resolves which camera(s) a scheduled capture should use: the
+     * intersection of [SettingsManager.selectedCameraIds] with the cameras
+     * actually detected on the device right now (so a camera removed since
+     * the selection was made just silently drops out, rather than causing
+     * an error). If that intersection is empty - either nothing was ever
+     * selected, or every previously selected camera is gone - falls back to
+     * the first detected camera so a fresh install / reconfigured device
+     * still captures something rather than nothing.
      *
      * Returns full [CameraInfo] (not just IDs) so callers can pass the
      * facing straight into [cameraLabel] without re-enumerating cameras a
@@ -181,13 +191,8 @@ object PhotoCaptureHelper {
      */
     suspend fun resolveCameras(context: Context, settings: SettingsManager): List<CameraInfo> {
         val cameras = CameraRepository(context).list()
-        return when (settings.captureMode) {
-            "all_front" -> cameras.filter { it.facing == CameraCharacteristics.LENS_FACING_FRONT }
-            "all_back" -> cameras.filter { it.facing == CameraCharacteristics.LENS_FACING_BACK }
-            else -> {
-                val id = settings.cameraId.takeIf { it.isNotBlank() } ?: cameras.firstOrNull()?.id
-                cameras.filter { it.id == id }
-            }
-        }
+        val selected = settings.selectedCameraIds
+        val matched = cameras.filter { it.id in selected }
+        return matched.ifEmpty { listOfNotNull(cameras.firstOrNull()) }
     }
 }

@@ -34,6 +34,15 @@ class CameraForegroundService:Service(){
  companion object{
   const val ACTION_START="de.example.timelapse.START"
   const val ACTION_STOP="de.example.timelapse.STOP"
+  /** Fast poll cadence while timelapse is disabled - cheap (just a prefs
+   *  read + delay, no camera access), keeps re-enabling responsive. */
+  private const val IDLE_POLL_INTERVAL_MS=5_000L
+  /** Upper bound on a single sleep while waiting for the next due capture.
+   *  Doesn't affect capture precision (the exact remaining time is always
+   *  recalculated against lastCaptureAt on the next iteration) - it only
+   *  bounds how long settings changes (interval, time window, disabling)
+   *  can go unnoticed while a long wait is in progress. */
+  private const val MAX_SINGLE_SLEEP_MS=5*60_000L
  }
  private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
  private var loopJob:Job?=null
@@ -62,22 +71,34 @@ class CameraForegroundService:Service(){
   return START_STICKY
  }
 
+ /**
+  * Sleeps for exactly the remaining time until the next capture is due,
+  * instead of polling on a fixed cadence - this is what keeps captures
+  * landing precisely on the configured interval rather than drifting by up
+  * to a fixed poll period on every single shot. A capture that's already
+  * due (or overdue) is fired immediately, and the loop re-checks right
+  * away afterwards rather than sleeping first, since lastCaptureAt (and
+  * therefore the next due time) changed.
+  */
  private fun startLoopIfNeeded(){
   if(loopJob?.isActive==true)return
   loopJob=scope.launch{
    while(isActive){
     val s=SettingsManager(this@CameraForegroundService)
-    if(s.timelapseEnabled && dueForCapture(s)) capture(s)
-    // 30s check cadence keeps timing reasonably tight without busy-looping;
-    // actual capture cadence is governed by captureIntervalMinutes below.
-    delay(30_000L)
+    if(!s.timelapseEnabled){
+     delay(IDLE_POLL_INTERVAL_MS)
+     continue
+    }
+    val waitMs=msUntilNextCapture(s)
+    if(waitMs<=0L) capture(s) else delay(waitMs.coerceAtMost(MAX_SINGLE_SLEEP_MS))
    }
   }
  }
 
- private fun dueForCapture(s:SettingsManager):Boolean{
+ private fun msUntilNextCapture(s:SettingsManager):Long{
   val elapsed=System.currentTimeMillis()-s.lastCaptureAt
-  return elapsed>=s.captureIntervalMinutes*60_000L
+  val intervalMs=s.captureIntervalMinutes*60_000L
+  return intervalMs-elapsed
  }
 
  /**
@@ -98,7 +119,8 @@ class CameraForegroundService:Service(){
    val failures=mutableListOf<String>()
    for(camera in cameras){
     try{
-     PhotoCaptureHelper.captureAndSave(this,camera.id,s.cameraWidth,s.cameraHeight,s.jpegQuality,PhotoCaptureHelper.cameraLabel(camera))
+     val (w,h)=PhotoCaptureHelper.resolveResolution(s,camera.id)
+     PhotoCaptureHelper.captureAndSave(this,camera.id,w,h,s.jpegQuality,PhotoCaptureHelper.cameraLabel(camera))
     }catch(t:Throwable){
      android.util.Log.e("Timelapse","capture failed for camera ${camera.id}",t)
      failures.add("${camera.id}: ${t.message ?: t.javaClass.simpleName}")
