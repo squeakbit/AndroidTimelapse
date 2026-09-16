@@ -8,6 +8,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCharacteristics
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -16,6 +17,7 @@ import android.view.TextureView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -25,6 +27,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.viewinterop.AndroidView
@@ -43,6 +48,7 @@ import de.example.timelapse.camera.CameraPreviewController
 import de.example.timelapse.camera.CameraRepository
 import de.example.timelapse.camera.CameraInfo
 import de.example.timelapse.camera.PhotoCaptureHelper
+import de.example.timelapse.data.AppDatabase
 import de.example.timelapse.mqtt.MqttClientManager
 import de.example.timelapse.mqtt.MqttDiscovery
 import de.example.timelapse.service.CameraForegroundService
@@ -53,6 +59,43 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.time.Duration.Companion.seconds
+
+/**
+ * Result of trying to load the most recently captured photo for the
+ * "Letztes Foto einblenden" ghost-overlay in [MainActivity]'s Kamera tab.
+ * Modeled explicitly (rather than a nullable Bitmap) so the UI can tell
+ * apart "nothing captured yet" from "a photo exists but couldn't be
+ * loaded" (e.g. deleted from storage after upload) and show an accurate
+ * message in each case instead of just silently showing nothing.
+ */
+private sealed class GhostPhotoState {
+    object Idle : GhostPhotoState()
+    object Loading : GhostPhotoState()
+    object NoPhoto : GhostPhotoState()
+    object LoadFailed : GhostPhotoState()
+    data class Loaded(val bitmap: Bitmap) : GhostPhotoState()
+}
+
+/**
+ * Loads the most recently captured photo (across all cameras) for the
+ * ghost-overlay, decoded from its MediaStore URI. Never throws - any
+ * failure (no photo recorded yet, file since deleted/moved, decode error)
+ * comes back as a distinct [GhostPhotoState] rather than crashing the tab.
+ */
+private suspend fun loadGhostPhotoState(context: android.content.Context): GhostPhotoState =
+    withContext(Dispatchers.IO) {
+        try {
+            val photo = AppDatabase.getInstance(context).photoDao().getLastPhoto()
+                ?: return@withContext GhostPhotoState.NoPhoto
+            val uri = Uri.parse(photo.localPath)
+            val bitmap = context.contentResolver.openInputStream(uri)?.use { input ->
+                BitmapFactory.decodeStream(input)
+            }
+            if (bitmap != null) GhostPhotoState.Loaded(bitmap) else GhostPhotoState.LoadFailed
+        } catch (_: Throwable) {
+            GhostPhotoState.LoadFailed
+        }
+    }
 
 class MainActivity : ComponentActivity() {
 
@@ -615,6 +658,31 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Draws a rule-of-thirds grid (two horizontal, two vertical lines) plus
+     * an X made of both corner-to-corner diagonals, as a rough manual aid
+     * for pointing the camera back at roughly the same framing after it's
+     * been moved (e.g. for cleaning/maintenance). Purely visual - not
+     * captured into any photo, and not persisted.
+     */
+    @Composable
+    private fun AlignmentGridOverlay(modifier: Modifier = Modifier) {
+        val lineColor = Color.White.copy(alpha = 0.65f)
+        Canvas(modifier = modifier) {
+            val w = size.width
+            val h = size.height
+            val stroke = 1.dp.toPx()
+            // Rule of thirds
+            drawLine(lineColor, Offset(w / 3f, 0f), Offset(w / 3f, h), stroke)
+            drawLine(lineColor, Offset(2f * w / 3f, 0f), Offset(2f * w / 3f, h), stroke)
+            drawLine(lineColor, Offset(0f, h / 3f), Offset(w, h / 3f), stroke)
+            drawLine(lineColor, Offset(0f, 2f * h / 3f), Offset(w, 2f * h / 3f), stroke)
+            // X: both corner-to-corner diagonals meeting in the center
+            drawLine(lineColor, Offset(0f, 0f), Offset(w, h), stroke)
+            drawLine(lineColor, Offset(w, 0f), Offset(0f, h), stroke)
+        }
+    }
+
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun CameraTab(liveEnabled: Boolean, onLiveEnabledChange: (Boolean) -> Unit) {
@@ -626,6 +694,23 @@ class MainActivity : ComponentActivity() {
         var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
         var previewLoading by remember { mutableStateOf(false) }
         var textureSurface by remember { mutableStateOf<Surface?>(null) }
+
+        // Alignment-Hilfen zum Wiederausrichten der Kamera nach dem
+        // Verstellen (z.B. nach Reinigung/Wartung): ein Drittel-Raster mit
+        // X-Diagonalen als grobe Orientierung, und optional das letzte
+        // aufgenommene Foto halbtransparent über die Live-Vorschau gelegt,
+        // um exakt auf den alten Bildausschnitt zurückzufinden.
+        var showGrid by remember { mutableStateOf(true) }
+        var showGhost by remember { mutableStateOf(false) }
+        var ghostOpacity by remember { mutableFloatStateOf(0.35f) }
+        var ghostPhotoState by remember { mutableStateOf<GhostPhotoState>(GhostPhotoState.Idle) }
+
+        LaunchedEffect(showGhost) {
+            if (showGhost) {
+                ghostPhotoState = GhostPhotoState.Loading
+                ghostPhotoState = loadGhostPhotoState(this@MainActivity)
+            }
+        }
 
         LaunchedEffect(Unit) {
             cameras = withContext(Dispatchers.IO) { CameraRepository(this@MainActivity).list() }
@@ -685,42 +770,119 @@ class MainActivity : ComponentActivity() {
             item {
                 val aspect = if (previewHeight > 0) previewWidth.toFloat() / previewHeight else 4f / 3f
                 Card(modifier = Modifier.fillMaxWidth().aspectRatio(aspect)) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        when {
-                            liveEnabled -> AndroidView(
-                                modifier = Modifier.fillMaxSize(),
-                                factory = { ctx ->
-                                    TextureView(ctx).apply {
-                                        surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                                            override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
-                                                val (pw, ph) = previewCaptureSize(previewWidth, previewHeight)
-                                                st.setDefaultBufferSize(pw, ph)
-                                                // Release any previously held Surface before replacing
-                                                // it, so nothing leaks if this fires again without an
-                                                // intervening onSurfaceTextureDestroyed.
-                                                textureSurface?.release()
-                                                textureSurface = Surface(st)
+                    Box(Modifier.fillMaxSize()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            when {
+                                liveEnabled -> AndroidView(
+                                    modifier = Modifier.fillMaxSize(),
+                                    factory = { ctx ->
+                                        TextureView(ctx).apply {
+                                            surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                                                override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
+                                                    val (pw, ph) = previewCaptureSize(previewWidth, previewHeight)
+                                                    st.setDefaultBufferSize(pw, ph)
+                                                    // Release any previously held Surface before replacing
+                                                    // it, so nothing leaks if this fires again without an
+                                                    // intervening onSurfaceTextureDestroyed.
+                                                    textureSurface?.release()
+                                                    textureSurface = Surface(st)
+                                                }
+                                                override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
+                                                override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                                                    textureSurface?.release()
+                                                    textureSurface = null
+                                                    return true
+                                                }
+                                                override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
                                             }
-                                            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
-                                            override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
-                                                textureSurface?.release()
-                                                textureSurface = null
-                                                return true
-                                            }
-                                            override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
                                         }
                                     }
-                                }
-                            )
-                            previewLoading -> CircularProgressIndicator()
-                            previewBitmap != null -> Image(
-                                bitmap = previewBitmap!!.asImageBitmap(),
-                                contentDescription = "Kameravorschau",
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop
-                            )
-                            else -> Text("Keine Vorschau verfügbar")
+                                )
+                                previewLoading -> CircularProgressIndicator()
+                                previewBitmap != null -> Image(
+                                    bitmap = previewBitmap!!.asImageBitmap(),
+                                    contentDescription = "Kameravorschau",
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop
+                                )
+                                else -> Text("Keine Vorschau verfügbar")
+                            }
                         }
+                        // Ghost-Overlay unter dem Raster, damit die Rasterlinien
+                        // immer sichtbar bleiben statt vom halbtransparenten Foto
+                        // überdeckt zu werden.
+                        if (showGhost) {
+                            val gs = ghostPhotoState
+                            if (gs is GhostPhotoState.Loaded) {
+                                Image(
+                                    bitmap = gs.bitmap.asImageBitmap(),
+                                    contentDescription = "Letztes Foto (Ausrichtungshilfe)",
+                                    modifier = Modifier.fillMaxSize().alpha(ghostOpacity),
+                                    contentScale = ContentScale.Crop
+                                )
+                            }
+                        }
+                        if (showGrid) {
+                            AlignmentGridOverlay(modifier = Modifier.fillMaxSize())
+                        }
+                    }
+                }
+            }
+
+            item {
+                HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                Text("Ausrichtungshilfen", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Nützlich, um die Kamera nach dem Verstellen wieder auf denselben " +
+                            "Punkt auszurichten.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+
+            item {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Raster (Drittel + X)")
+                    Spacer(Modifier.weight(1f))
+                    Switch(checked = showGrid, onCheckedChange = { showGrid = it })
+                }
+            }
+
+            item {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Letztes Foto einblenden")
+                    Spacer(Modifier.weight(1f))
+                    Switch(checked = showGhost, onCheckedChange = { showGhost = it })
+                }
+            }
+
+            if (showGhost) {
+                item {
+                    Text("Transparenz: ${(ghostOpacity * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
+                    Slider(
+                        value = ghostOpacity,
+                        onValueChange = { ghostOpacity = it },
+                        valueRange = 0.1f..0.9f
+                    )
+                }
+
+                val statusText = when (ghostPhotoState) {
+                    GhostPhotoState.Idle, GhostPhotoState.Loading -> "Lade letztes Foto …"
+                    GhostPhotoState.NoPhoto -> "Noch kein Foto vorhanden - das Overlay erscheint nach der ersten Aufnahme."
+                    GhostPhotoState.LoadFailed -> "Letztes Foto konnte nicht geladen werden (evtl. gelöscht)."
+                    is GhostPhotoState.Loaded -> null
+                }
+                if (statusText != null) {
+                    item { Text(statusText, style = MaterialTheme.typography.bodySmall) }
+                }
+
+                item {
+                    TextButton(onClick = {
+                        lifecycleScope.launch {
+                            ghostPhotoState = GhostPhotoState.Loading
+                            ghostPhotoState = loadGhostPhotoState(this@MainActivity)
+                        }
+                    }) {
+                        Text(if (ghostPhotoState is GhostPhotoState.Loaded) "Aktualisieren" else "Erneut versuchen")
                     }
                 }
             }
