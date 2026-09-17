@@ -25,16 +25,6 @@ class SettingsManager(context: Context) {
     var captureIntervalMinutes: Int
         get() = p.getInt("capture_interval_minutes", 5)
         set(v) = p.edit().putInt("capture_interval_minutes", v.coerceIn(1, 1440)).apply()
-    /**
-     * Legacy single-camera setting, kept only as a reference for the
-     * default-resolution picker in the Settings tab (which camera's list of
-     * supported sizes to show) and as a one-time migration fallback for
-     * [selectedCameraIds]. Actual capture camera selection is controlled
-     * entirely by [selectedCameraIds] now.
-     */
-    var cameraId: String
-        get() = p.getString("camera_id", "") ?: ""
-        set(v) = p.edit().putString("camera_id", v).apply()
     var lastPreviewCameraId: String
         get() = p.getString("last_preview_camera_id", "") ?: ""
         set(v) = p.edit().putString("last_preview_camera_id", v).apply()
@@ -54,19 +44,12 @@ class SettingsManager(context: Context) {
      * how this is intersected with the cameras actually present on the
      * device). Any combination is allowed: one camera, a handful, or all of
      * them.
-     *
-     * If nothing has ever been explicitly saved here yet, falls back to a
-     * single-element set containing the legacy [cameraId] (for users
-     * upgrading from the old single-camera setting), or an empty set if
-     * that's blank too - callers should treat an empty result as "nothing
-     * selected yet" and pick a sensible default themselves once the camera
-     * list is known.
      */
     var selectedCameraIds: Set<String>
         get() {
             val stored = p.getStringSet("selected_camera_ids", null)
             if (stored != null) return HashSet(stored)
-            return cameraId.takeIf { it.isNotBlank() }?.let { setOf(it) } ?: emptySet()
+            return emptySet()
         }
         set(v) = p.edit().putStringSet("selected_camera_ids", HashSet(v)).apply()
     /**

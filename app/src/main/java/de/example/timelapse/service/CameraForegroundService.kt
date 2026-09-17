@@ -1,5 +1,7 @@
 package de.example.timelapse.service
+
 import android.Manifest
+import android.R
 import android.app.*
 import android.content.*
 import android.content.pm.PackageManager
@@ -12,245 +14,231 @@ import de.example.timelapse.camera.PhotoCaptureHelper
 import de.example.timelapse.mqtt.MqttClientManager
 import de.example.timelapse.mqtt.MqttDiscovery
 import de.example.timelapse.smb.SmbUploader
-import java.util.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
+import java.util.Calendar
 
 /**
  * Since Android 14, a foreground service of type "camera" cannot be
- * *started* while the app is in the background - regardless of whether the
- * CAMERA permission is granted (confirmed via real-device logcat: "Foreground
- * service started from background can not have location/camera/microphone
- * access"). Repeatedly starting this service fresh from an AlarmManager
- * broadcast (as it used to) therefore crashes it every single time the app
- * isn't already in the foreground.
- *
- * The fix is architectural: this service is started ONCE from a legitimate
- * foreground context (MainActivity, when the user is actively looking at the
- * app) and then stays alive indefinitely, running its own internal timing
- * loop to decide when the next capture is due - instead of relying on being
- * re-started by an external alarm for every single photo. There is no
- * separate alarm nudging this service back alive either: every capture
- * already publishes the full MQTT state, which is itself the "still alive"
- * signal, so the only thing AlarmManager is still used for in this app is
- * the daily SMB upload.
+ * started while the app is in the background. This service is started
+ * from the foreground and stays alive to run the capture loop.
  */
-class CameraForegroundService:Service(){
- companion object{
-  const val ACTION_START="de.example.timelapse.START"
-  const val ACTION_STOP="de.example.timelapse.STOP"
-  /** Fast poll cadence while timelapse is disabled - cheap (just a prefs
-   *  read + delay, no camera access), keeps re-enabling responsive. */
-  private const val IDLE_POLL_INTERVAL_MS=5_000L
-  /** Upper bound on a single sleep while waiting for the next due capture.
-   *  Doesn't affect capture precision (the exact remaining time is always
-   *  recalculated against lastCaptureAt on the next iteration) - it only
-   *  bounds how long settings changes (interval, time window, disabling)
-   *  can go unnoticed while a long wait is in progress. */
-  private const val MAX_SINGLE_SLEEP_MS=5*60_000L
- }
- private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
- private var loopJob:Job?=null
- private var hasCameraPermission=false
- private val nudgeChannel= Channel<Unit>(Channel.CONFLATED)
+class CameraForegroundService : Service() {
+    companion object {
+        const val ACTION_START = "de.example.timelapse.START"
+        const val ACTION_STOP = "de.example.timelapse.STOP"
+        
+        private const val MAX_SINGLE_SLEEP_MS = 5 * 60_000L
 
- override fun onCreate(){
-  super.onCreate()
-  hasCameraPermission=ContextCompat.checkSelfPermission(this,Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED
-  if(!hasCameraPermission){
-   android.util.Log.e("Timelapse","CAMERA permission not granted - aborting without starting foreground service")
-   reportError("Kamera-Berechtigung fehlt - bitte App öffnen und Berechtigung neu erteilen")
-   stopSelf()
-   return
-  }
-  createChannel()
-  // The (id, notification, type) overload and FOREGROUND_SERVICE_TYPE_CAMERA
-  // itself only exist from API 29 onward; on API 26-28 (this app's minSdk is
-  // 26, for devices that can't be updated past Android 8) foreground service
-  // types don't exist at all yet, so the plain two-arg overload is the only
-  // one available there.
-  if(Build.VERSION.SDK_INT>=29) startForeground(10,notification(),ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
-  else startForeground(10,notification())
- }
-
- override fun onStartCommand(i:Intent?,flags:Int,startId:Int):Int{
-  if(!hasCameraPermission){WakeLockHolder.release();stopSelf(startId);return START_NOT_STICKY}
-  when(i?.action){
-   ACTION_STOP->{WakeLockHolder.release();loopJob?.cancel();stopSelf();return START_NOT_STICKY}
-   else->{
-    startLoopIfNeeded()
-    nudgeChannel.trySend(Unit)
-   }
-  }
-  return START_STICKY
- }
-
- /**
-  * Sleeps for exactly the remaining time until the next capture is due,
-  * instead of polling on a fixed cadence - this is what keeps captures
-  * landing precisely on the configured interval rather than drifting by up
-  * to a fixed poll period on every single shot. A capture that's already
-  * due (or overdue) is fired immediately, and the loop re-checks right
-  * away afterwards rather than sleeping first, since lastCaptureAt (and
-  * therefore the next due time) changed.
-  */
- private fun startLoopIfNeeded(){
-  if(loopJob?.isActive==true){
-   return
-  }
-  loopJob=scope.launch{
-   // While taking a photo (which can take 10-30s with AF and writing to
-   // storage), we MUST hold a service-level WakeLock. The AlarmReceiver
-   // only keeps us awake long enough to get here.
-   val pm = getSystemService(POWER_SERVICE) as PowerManager
-   val serviceLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Timelapse:ServiceLoop")
-   
-   try {
-    while(isActive){
-     val s=SettingsManager(this@CameraForegroundService)
-     if(!s.timelapseEnabled){
-      WakeLockHolder.release() 
-      delay(IDLE_POLL_INTERVAL_MS)
-      continue
-     }
-     
-     val waitMs=msUntilNextCapture(s)
-     if(waitMs<=5000L) { // 5s grace period
-      if (!serviceLock.isHeld) serviceLock.acquire(3 * 60_000L) // 3m lock for capture
-      try {
-       capture(s)
-      } finally {
-       WakeLockHolder.release()
-       if (serviceLock.isHeld) try { serviceLock.release() } catch(_: Throwable) {}
-      }
-     } else {
-      // Ensure wake-up alarm is set for the future.
-      try { AlarmScheduler(this@CameraForegroundService).scheduleNextCapture() } catch (_: Throwable) {}
-      WakeLockHolder.release()
-      if (serviceLock.isHeld) serviceLock.release()
-      
-      withTimeoutOrNull(waitMs.coerceAtMost(MAX_SINGLE_SLEEP_MS)) {
-       nudgeChannel.receive()
-      }
-     }
+        /**
+         * Standard helper to ensure the service is running, respecting
+         * background start restrictions by only attempting it when likely
+         * in the foreground.
+         */
+        fun ensureServiceRunning(context: Context) {
+            if (!SettingsManager(context).timelapseEnabled) return
+            try {
+                val intent = Intent(context, CameraForegroundService::class.java).setAction(ACTION_START)
+                ContextCompat.startForegroundService(context, intent)
+            } catch (t: Throwable) {
+                Log.w("Timelapse", "Failed to start camera service", t)
+            }
+        }
     }
-   } finally {
-    if (serviceLock.isHeld) serviceLock.release()
-   }
-  }
- }
 
- private fun msUntilNextCapture(s:SettingsManager):Long{
-  val elapsed=System.currentTimeMillis()-s.lastCaptureAt
-  val intervalMs=s.captureIntervalMinutes*60_000L
-  return intervalMs-elapsed
- }
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var loopJob: Job? = null
+    private var hasCameraPermission = false
+    private val nudgeChannel = Channel<Unit>(Channel.CONFLATED)
 
- /**
-  * Resolves the configured camera(s) (single camera, or all front/all back)
-  * and captures with each one in turn. A failure on one camera is skipped
-  * rather than aborting the remaining cameras, so e.g. one disconnected
-  * external camera doesn't block the others. Per-camera failures are
-  * collected and reported in a single MQTT round-trip after the loop
-  * (instead of one connect/publish/disconnect per failed camera), since a
-  * capture cycle already opens a connection anyway to publish state below.
-  */
- private suspend fun capture(s:SettingsManager){
-  try {
-   s.lastCaptureAt=System.currentTimeMillis()
-   AlarmScheduler(this).scheduleNextCapture()
-  } catch (t: Throwable) {
-   Log.e("Timelapse", "failed to schedule next capture", t)
-  }
-  
-  // Also schedule an absolute "safety" alarm 30 seconds after the intended
-  // interval, just in case the primary alarm fails to trigger the loop
-  // or the device reboots.
-  try {
-      val s2 = SettingsManager(this)
-      val safetyAt = s2.lastCaptureAt + (s2.captureIntervalMinutes * 60_000L) + 30_000L
-      if (safetyAt > System.currentTimeMillis()) {
-          AlarmScheduler(this).scheduleNextCapture() // Primary (exact)
-      }
-  } catch (_: Throwable) {}
-
-  if(s.timeWindowEnabled && !isWithinWindow(s))return
-  try{
-   val cameras=PhotoCaptureHelper.resolveCameras(this,s)
-   if(cameras.isEmpty()){reportError("Keine passende Kamera gefunden");return}
-   val failures=mutableListOf<String>()
-   for((index, camera) in cameras.withIndex()){
-    try{
-     // Give the hardware some breathing room between cameras, 
-     // especially on older devices where the OS might be slow 
-     // to fully release the previous camera sensor.
-     if (index > 0) delay(2000)
-     
-     val (w,h)=PhotoCaptureHelper.resolveResolution(s,camera.id)
-     PhotoCaptureHelper.captureAndSave(this,camera.id,w,h,s.jpegQuality,PhotoCaptureHelper.cameraLabel(camera))
-    }catch(t:Throwable){
-     android.util.Log.e("Timelapse","capture failed for camera ${camera.id}",t)
-     failures.add("${camera.id}: ${t.message ?: t.javaClass.simpleName}")
+    private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == "timelapse_enabled" || key == "capture_interval_minutes" || key == "manual_upload_requested") {
+            nudgeChannel.trySend(Unit)
+        }
     }
-   }
-   // Publishes all sensor states (and, if any camera failed above, the
-   // combined error) in one connection right away - not just on the daily
-   // upload - so Home Assistant reflects a real-time proof-of-life for
-   // scheduled capture, independent of whether the app's UI process is
-   // still alive. This is what replaces the old separate hourly heartbeat.
-   try{
-    val mqtt=de.example.timelapse.mqtt.MqttClientManager(this)
-    mqtt.subscribeAndCheckUpload() // Check for "Manual Upload" button press in HA
-    
-    if(failures.isNotEmpty()) mqtt.publish("timelapse/${s.deviceId}/last_error","Aufnahme fehlgeschlagen: "+failures.joinToString("; "))
-    MqttDiscovery(mqtt,s,this).publishState()
-    mqtt.close()
-   }catch(t:Throwable){
-    Log.w("Timelapse","mqtt state publish failed",t)}
-   
-   // If MQTT check (above) or previous logic set this to true, run upload now.
-   if (s.manualUploadRequested) {
-    try {
-     SmbUploader(this).uploadPendingPhotos()
-     s.manualUploadRequested = false
-     // Re-open MQTT briefly to set the switch back to OFF
-     val mqtt= MqttClientManager(this)
-     mqtt.publish("timelapse/${s.deviceId}/upload/state", "OFF")
-     mqtt.close()
-    } catch (_: Throwable) {}
-   }
-  }catch(t:Throwable){
-   android.util.Log.e("Timelapse","capture failed",t)
-   reportError("Aufnahme fehlgeschlagen: ${t.message ?: t.javaClass.simpleName}")
-  }
- }
 
- /** Best-effort MQTT report of a failure, visible in Home Assistant without needing logcat. */
- private fun reportError(message:String){
-  scope.launch{
-   try{
-    val s=SettingsManager(this@CameraForegroundService)
-    val mqtt=de.example.timelapse.mqtt.MqttClientManager(this@CameraForegroundService)
-    mqtt.publish("timelapse/${s.deviceId}/last_error",message)
-    mqtt.close()
-   }catch(_:Throwable){}
-  }
- }
+    override fun onCreate() {
+        super.onCreate()
+        hasCameraPermission = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        if (!hasCameraPermission) {
+            Log.e("Timelapse", "CAMERA permission not granted - aborting service")
+            stopSelf()
+            return
+        }
+        createChannel()
+        if (Build.VERSION.SDK_INT >= 29) {
+            startForeground(10, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
+        } else {
+            startForeground(10, notification())
+        }
+        
+        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+        prefs.registerOnSharedPreferenceChangeListener(prefListener)
+    }
 
- /**
-  * Daily time window (e.g. 18:00–06:00). Handles wraparound past midnight:
-  * if the end is earlier than the start, "in window" means at/after start
-  * OR before end.
-  */
- private fun isWithinWindow(s:SettingsManager):Boolean{
-  val cal=Calendar.getInstance()
-  val now=cal.get(Calendar.HOUR_OF_DAY)*60+cal.get(Calendar.MINUTE)
-  val start=s.windowStartHour*60+s.windowStartMinute
-  val end=s.windowEndHour*60+s.windowEndMinute
-  return if(start<=end) now in start until end else now>=start || now<end
- }
- private fun createChannel(){getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel("camera","Timelapse",NotificationManager.IMPORTANCE_LOW))}
- private fun notification()=Notification.Builder(this,"camera").setContentTitle("Timelapse läuft").setContentText("Wartet auf nächste Aufnahme …").setSmallIcon(android.R.drawable.ic_menu_camera).build()
- override fun onDestroy(){loopJob?.cancel();scope.cancel();super.onDestroy()}
- override fun onBind(i:Intent?)=null
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!hasCameraPermission) {
+            WakeLockHolder.release()
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        when (intent?.action) {
+            ACTION_STOP -> {
+                WakeLockHolder.release()
+                loopJob?.cancel()
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            else -> {
+                startLoopIfNeeded()
+                nudgeChannel.trySend(Unit)
+            }
+        }
+        return START_STICKY
+    }
+
+    private fun startLoopIfNeeded() {
+        if (loopJob?.isActive == true) return
+        loopJob = scope.launch {
+            val pm = getSystemService(POWER_SERVICE) as PowerManager
+            val serviceLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Timelapse:ServiceLoop")
+            
+            try {
+                while (isActive) {
+                    val s = SettingsManager(this@CameraForegroundService)
+                    if (!s.timelapseEnabled) {
+                        WakeLockHolder.release()
+                        // Wait indefinitely until nudged via PrefListener
+                        nudgeChannel.receive()
+                        continue
+                    }
+                    
+                    val waitMs = msUntilNextCapture(s)
+                    if (waitMs <= 5000L) { // 5s grace period
+                        if (!serviceLock.isHeld) serviceLock.acquire(3 * 60_000L)
+                        try {
+                            capture(s)
+                        } finally {
+                            WakeLockHolder.release()
+                            if (serviceLock.isHeld) try { serviceLock.release() } catch (_: Throwable) {}
+                        }
+                    } else {
+                        // Ensure wake-up alarm is set
+                        try { AlarmScheduler(this@CameraForegroundService).scheduleNextCapture() } catch (_: Throwable) {}
+                        WakeLockHolder.release()
+                        if (serviceLock.isHeld) try { serviceLock.release() } catch (_: Throwable) {}
+                        
+                        withTimeoutOrNull(waitMs.coerceAtMost(MAX_SINGLE_SLEEP_MS)) {
+                            nudgeChannel.receive()
+                        }
+                    }
+                }
+            } finally {
+                if (serviceLock.isHeld) try { serviceLock.release() } catch (_: Throwable) {}
+            }
+        }
+    }
+
+    private fun msUntilNextCapture(s: SettingsManager): Long {
+        val elapsed = System.currentTimeMillis() - s.lastCaptureAt
+        val intervalMs = s.captureIntervalMinutes * 60_000L
+        return intervalMs - elapsed
+    }
+
+    private suspend fun capture(s: SettingsManager) {
+        try {
+            s.lastCaptureAt = System.currentTimeMillis()
+            AlarmScheduler(this).scheduleNextCapture()
+        } catch (t: Throwable) {
+            Log.e("Timelapse", "failed to schedule next capture", t)
+        }
+
+        if (s.timeWindowEnabled && !isWithinWindow(s)) return
+        
+        try {
+            val cameras = PhotoCaptureHelper.resolveCameras(this, s)
+            if (cameras.isEmpty()) {
+                reportError("Keine passende Kamera gefunden")
+                return
+            }
+            
+            val failures = mutableListOf<String>()
+            for ((index, camera) in cameras.withIndex()) {
+                try {
+                    if (index > 0) delay(2000)
+                    val (w, h) = PhotoCaptureHelper.resolveResolution(s, camera.id)
+                    PhotoCaptureHelper.captureAndSave(this, camera.id, w, h, s.jpegQuality, PhotoCaptureHelper.cameraLabel(camera))
+                } catch (t: Throwable) {
+                    Log.e("Timelapse", "capture failed for camera ${camera.id}", t)
+                    failures.add("${camera.id}: ${t.message ?: t.javaClass.simpleName}")
+                }
+            }
+
+            // Consolidate MQTT calls
+            try {
+                val mqtt = MqttClientManager(this)
+                mqtt.subscribeAndCheckUpload()
+                
+                if (failures.isNotEmpty()) {
+                    mqtt.publish("timelapse/${s.deviceId}/last_error", "Aufnahme fehlgeschlagen: " + failures.joinToString("; "))
+                }
+                MqttDiscovery(mqtt, s, this).publishState()
+                
+                // If MQTT check or previous logic set this to true, run upload now.
+                if (s.manualUploadRequested) {
+                    try {
+                        SmbUploader(this).uploadPendingPhotos()
+                        s.manualUploadRequested = false
+                        mqtt.publish("timelapse/${s.deviceId}/upload/state", "OFF")
+                    } catch (_: Throwable) {}
+                }
+                mqtt.close()
+            } catch (t: Throwable) {
+                Log.w("Timelapse", "mqtt state publish failed", t)
+            }
+        } catch (t: Throwable) {
+            Log.e("Timelapse", "capture failed", t)
+            reportError("Aufnahme fehlgeschlagen: ${t.message ?: t.javaClass.simpleName}")
+        }
+    }
+
+    private fun reportError(message: String) {
+        scope.launch {
+            try {
+                val s = SettingsManager(this@CameraForegroundService)
+                val mqtt = MqttClientManager(this@CameraForegroundService)
+                mqtt.publish("timelapse/${s.deviceId}/last_error", message)
+                mqtt.close()
+            } catch (_: Throwable) {}
+        }
+    }
+
+    private fun isWithinWindow(s: SettingsManager): Boolean {
+        val cal = Calendar.getInstance()
+        val now = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+        val start = s.windowStartHour * 60 + s.windowStartMinute
+        val end = s.windowEndHour * 60 + s.windowEndMinute
+        return if (start <= end) now in start until end else now >= start || now < end
+    }
+
+    private fun createChannel() {
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(NotificationChannel("camera", "Timelapse", NotificationManager.IMPORTANCE_LOW))
+    }
+
+    private fun notification(): Notification = Notification.Builder(this, "camera")
+        .setContentTitle("Timelapse läuft")
+        .setContentText("Wartet auf nächste Aufnahme …")
+        .setSmallIcon(R.drawable.ic_menu_camera)
+        .build()
+
+    override fun onDestroy() {
+        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+        prefs.unregisterOnSharedPreferenceChangeListener(prefListener)
+        loopJob?.cancel()
+        scope.cancel()
+        super.onDestroy()
+    }
+
+    override fun onBind(intent: Intent?) = null
 }

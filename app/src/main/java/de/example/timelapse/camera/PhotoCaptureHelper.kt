@@ -21,42 +21,28 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/**
- * Captures a still photo with [cameraId] at [width]x[height]/[jpegQuality],
- * stores it under Pictures/Timelapse/<date>/, and records it in the local
- * Room database as a pending upload. Used by both the scheduled
- * [de.example.timelapse.service.CameraForegroundService] and the manual
- * test mode in [de.example.timelapse.MainActivity] so both paths behave
- * identically.
- *
- * Storage: on API 29+ (Android 10+), uses MediaStore's scoped-storage APIs
- * (RELATIVE_PATH/IS_PENDING) - no storage permission needed since the app
- * only touches media it created itself. Below API 29 (down to the app's
- * minSdk 26, i.e. Android 8.0/8.1/9), scoped storage doesn't exist yet: the
- * file is written directly under the public Pictures directory instead,
- * which requires WRITE_EXTERNAL_STORAGE (declared in the manifest with
- * maxSdkVersion=28, requested at runtime by MainActivity on those OS
- * versions only) and is then registered with the media scanner so it (a)
- * shows up in gallery apps and (b) gets a proper content:// URI - the rest
- * of the app (SmbUploader's delete-after-upload, the camera tab's
- * ghost-overlay reader) already assumes a content:// URI everywhere, and a
- * bare file:// URI wouldn't support ContentResolver.delete().
- *
- * Filename scheme: "<cameraLabel>_<yyMMdd>-<seq>.jpg", e.g. "B0_260915-0000.jpg".
- * - cameraLabel is a one-letter facing code (F/B/E/C) plus the raw Camera2
- *   ID, e.g. "B0" for the back-facing camera with ID "0". This keeps
- *   multiple cameras' output distinguishable even though they all write
- *   into the same date folder (no per-camera subfolders) and even if all
- *   files ever end up copied into one flat directory.
- * - seq is a zero-padded 4-digit sequence number, counted separately per
- *   camera label and reset to 0000 the first time that camera captures on
- *   a new calendar day. This makes capture order within a day unambiguous
- *   without needing a clock-time field in the filename at all. Four digits
- *   comfortably covers even a 1-minute capture interval run for a full day
- *   (1440 shots) without wrapping around.
- */
 object PhotoCaptureHelper {
     private const val COUNTER_PREFS = "capture_counters"
+
+    /**
+     * Captures a low-resolution preview image for the UI.
+     */
+    suspend fun capturePreview(context: Context, cameraId: String): File? = withContext(Dispatchers.IO) {
+        val settings = SettingsManager(context)
+        val (rw, rh) = resolveResolution(settings, cameraId)
+        val w = if (rw > rh) 1024 else 768
+        val h = if (rw > rh) 768 else 1024
+        val camera = Camera2Capture(context)
+        val temp = File.createTempFile("preview-", ".jpg", context.cacheDir)
+        try {
+            if (camera.capture(cameraId, w, h, 80, temp)) temp else null
+        } catch (_: Throwable) {
+            temp.delete()
+            null
+        } finally {
+            camera.close()
+        }
+    }
 
     /** One-letter facing code used as the first character of a camera label. */
     private fun facingCode(facing: Int?): String = when (facing) {
