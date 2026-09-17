@@ -28,7 +28,7 @@ sealed class GhostPhotoState {
     object Loading : GhostPhotoState()
     object NoPhoto : GhostPhotoState()
     object LoadFailed : GhostPhotoState()
-    data class Loaded(val bitmap: Bitmap) : GhostPhotoState()
+    data class Loaded(val bitmap: Bitmap, val edgeBitmap: Bitmap? = null) : GhostPhotoState()
 }
 
 suspend fun loadGhostPhotoState(context: Context, cameraLabel: String?): GhostPhotoState =
@@ -38,7 +38,10 @@ suspend fun loadGhostPhotoState(context: Context, cameraLabel: String?): GhostPh
             val photo = AppDatabase.getInstance(context).photoDao().getLastPhotoByCameraLabel(cameraLabel)
                 ?: return@withContext GhostPhotoState.NoPhoto
             val bitmap = decodeOrientedBitmap(context, Uri.parse(photo.localPath))
-            if (bitmap != null) GhostPhotoState.Loaded(bitmap) else GhostPhotoState.LoadFailed
+            if (bitmap != null) {
+                val edgeBitmap = applySobelFilter(bitmap)
+                GhostPhotoState.Loaded(bitmap, edgeBitmap)
+            } else GhostPhotoState.LoadFailed
         } catch (_: Throwable) {
             GhostPhotoState.LoadFailed
         }
@@ -74,11 +77,33 @@ fun exifRotationDegrees(exif: ExifInterface): Int =
 fun rotateBitmapIfNeeded(bitmap: Bitmap, degrees: Int): Bitmap {
     if (degrees == 0) return bitmap
     val matrix = Matrix().apply { postRotate(degrees.toFloat()) }
-    return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+    val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+    if (rotated != bitmap) bitmap.recycle()
+    return rotated
+}
+
+private fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeight: Int): Int {
+    val (height: Int, width: Int) = options.outHeight to options.outWidth
+    var inSampleSize = 1
+    if (height > reqHeight || width > reqWidth) {
+        val halfHeight: Int = height / 2
+        val halfWidth: Int = width / 2
+        while (halfHeight / inSampleSize >= reqHeight && halfWidth / inSampleSize >= reqWidth) {
+            inSampleSize *= 2
+        }
+    }
+    return inSampleSize
 }
 
 fun decodeOrientedBitmap(path: String): Bitmap? {
-    val bitmap = BitmapFactory.decodeFile(path) ?: return null
+    val options = BitmapFactory.Options().apply {
+        inJustDecodeBounds = true
+    }
+    BitmapFactory.decodeFile(path, options)
+    options.inSampleSize = calculateInSampleSize(options, 1600, 1600)
+    options.inJustDecodeBounds = false
+    
+    val bitmap = BitmapFactory.decodeFile(path, options) ?: return null
     val degrees = try {
         exifRotationDegrees(ExifInterface(path))
     } catch (_: Throwable) {
@@ -89,8 +114,20 @@ fun decodeOrientedBitmap(path: String): Bitmap? {
 
 fun decodeOrientedBitmap(context: Context, uri: Uri): Bitmap? {
     val resolver = context.contentResolver
+    val options = BitmapFactory.Options().apply {
+        inJustDecodeBounds = true
+    }
+    try {
+        resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
+    } catch (_: Throwable) {
+        return null
+    }
+
+    options.inSampleSize = calculateInSampleSize(options, 1600, 1600)
+    options.inJustDecodeBounds = false
+
     val bitmap = try {
-        resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+        resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
     } catch (_: Throwable) {
         null
     } ?: return null
@@ -110,6 +147,49 @@ fun facingLabel(facing: Int): String = when (facing) {
     1 -> "Back"
     2 -> "External"
     else -> "Unbekannt"
+}
+
+fun applySobelFilter(source: Bitmap): Bitmap {
+    val width = source.width
+    val height = source.height
+    val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+
+    val pixels = IntArray(width * height)
+    source.getPixels(pixels, 0, width, 0, 0, width, height)
+
+    val gray = IntArray(width * height)
+    for (i in pixels.indices) {
+        val p = pixels[i]
+        val r = (p shr 16) and 0xff
+        val g = (p shr 8) and 0xff
+        val b = p and 0xff
+        gray[i] = (0.299 * r + 0.587 * g + 0.114 * b).toInt()
+    }
+
+    val outputPixels = IntArray(width * height)
+    for (y in 1 until height - 1) {
+        for (x in 1 until width - 1) {
+            val gx = (
+                -1 * gray[(y - 1) * width + (x - 1)] + 1 * gray[(y - 1) * width + (x + 1)] +
+                -2 * gray[y * width + (x - 1)] + 2 * gray[y * width + (x + 1)] +
+                -1 * gray[(y + 1) * width + (x - 1)] + 1 * gray[(y + 1) * width + (x + 1)]
+            )
+            val gy = (
+                -1 * gray[(y - 1) * width + (x - 1)] - 2 * gray[(y - 1) * width + x] - 1 * gray[(y - 1) * width + (x + 1)] +
+                1 * gray[(y + 1) * width + (x - 1)] + 2 * gray[(y + 1) * width + x] + 1 * gray[(y + 1) * width + (x + 1)]
+            )
+            val magnitude = Math.min(255, Math.sqrt((gx * gx + gy * gy).toDouble()).toInt())
+            // White edges on transparent background would be nice, but black background is easier for standard blending.
+            // Let's go with white edges on transparent for "Edge Highlighting".
+            if (magnitude > 40) { // Simple threshold
+                outputPixels[y * width + x] = 0xFFFFFFFF.toInt()
+            } else {
+                outputPixels[y * width + x] = 0x00000000
+            }
+        }
+    }
+    output.setPixels(outputPixels, 0, width, 0, 0, width, height)
+    return output
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

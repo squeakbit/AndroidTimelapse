@@ -8,6 +8,7 @@ import android.view.Surface
 import android.view.TextureView
 import android.view.WindowManager
 import android.content.Context
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -26,6 +27,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
@@ -47,7 +49,12 @@ import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CameraTab(liveEnabled: Boolean, onLiveEnabledChange: (Boolean) -> Unit) {
+fun CameraTab(
+    liveEnabled: Boolean, 
+    onLiveEnabledChange: (Boolean) -> Unit,
+    showGhost: Boolean,
+    onShowGhostChange: (Boolean) -> Unit
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val settings = remember { SettingsManager(context) }
@@ -59,9 +66,22 @@ fun CameraTab(liveEnabled: Boolean, onLiveEnabledChange: (Boolean) -> Unit) {
     var previewLoading by remember { mutableStateOf(false) }
     var textureSurface by remember { mutableStateOf<Surface?>(null) }
     var showGrid by remember { mutableStateOf(settings.showGrid) }
-    var showGhost by remember { mutableStateOf(settings.showGhost) }
+    var ghostMode by remember { mutableIntStateOf(settings.ghostMode) }
     var ghostOpacity by remember { mutableFloatStateOf(settings.ghostOpacity) }
+    var ghostOscillationEnabled by remember { mutableStateOf(settings.ghostOscillationEnabled) }
+    var ghostOscillationRange by remember { mutableStateOf(settings.ghostOscillationMin..settings.ghostOscillationMax) }
     var ghostPhotoState by remember { mutableStateOf<GhostPhotoState>(GhostPhotoState.Idle) }
+
+    // Use a VSync-synced metronome for stable animation on older Android versions.
+    var metronomeNanos by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(ghostOscillationEnabled, ghostMode) {
+        if (ghostOscillationEnabled || ghostMode == 2) {
+            val startNanos = System.nanoTime()
+            while (true) {
+                withFrameNanos { metronomeNanos = it - startNanos }
+            }
+        }
+    }
 
     LaunchedEffect(Unit) {
         cameras = withContext(Dispatchers.IO) { CameraRepository(context).list() }
@@ -84,12 +104,17 @@ fun CameraTab(liveEnabled: Boolean, onLiveEnabledChange: (Boolean) -> Unit) {
     LaunchedEffect(selectedCameraLabel) {
         val exists = hasReadableGhostPhoto(context, selectedCameraLabel)
         hasGhostPhoto.value = exists
-        if (!exists) showGhost = false
+        // Only auto-disable if we are sure it's missing (cameras loaded but photo isn't there)
+        if (!exists && cameras.isNotEmpty() && selectedCameraLabel != null) {
+            onShowGhostChange(false)
+        }
     }
 
     LaunchedEffect(showGrid) { settings.showGrid = showGrid }
     LaunchedEffect(showGhost) { settings.showGhost = showGhost }
-    LaunchedEffect(ghostOpacity) { settings.ghostOpacity = ghostOpacity }
+    LaunchedEffect(ghostMode) { settings.ghostMode = ghostMode }
+    LaunchedEffect(ghostOpacity) { /* Saved onValueChangeFinished in Slider */ }
+    LaunchedEffect(ghostOscillationEnabled) { settings.ghostOscillationEnabled = ghostOscillationEnabled }
     LaunchedEffect(selectedCameraId) { settings.lastPreviewCameraId = selectedCameraId }
 
     LaunchedEffect(showGhost, selectedCameraLabel) {
@@ -139,7 +164,8 @@ fun CameraTab(liveEnabled: Boolean, onLiveEnabledChange: (Boolean) -> Unit) {
     }
 
     LaunchedEffect(selectedCameraId, liveEnabled) {
-        if (!liveEnabled) refreshPreview()
+        // No auto-refresh to keep UI responsive on older devices.
+        // User can manually click "Refresh" if needed.
     }
 
     LaunchedEffect(liveEnabled, selectedCameraId, textureSurface) {
@@ -205,7 +231,7 @@ fun CameraTab(liveEnabled: Boolean, onLiveEnabledChange: (Boolean) -> Unit) {
                                         } else Modifier.fillMaxSize()
                                     )
                                     .graphicsLayer { rotationZ = rotationAngle.toFloat() }, 
-                                contentScale = ContentScale.FillBounds
+                                contentScale = ContentScale.Fit
                             )
                         }
                         else -> Text("Kamera bereit", color = Color.Gray)
@@ -215,11 +241,11 @@ fun CameraTab(liveEnabled: Boolean, onLiveEnabledChange: (Boolean) -> Unit) {
                     val gs = ghostPhotoState
                     if (gs is GhostPhotoState.Loaded) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            val bitmapToDraw = if (ghostMode == 3 && gs.edgeBitmap != null) gs.edgeBitmap else gs.bitmap
                             Image(
-                                bitmap = gs.bitmap.asImageBitmap(),
+                                bitmap = bitmapToDraw.asImageBitmap(),
                                 contentDescription = "Ghost",
                                 modifier = Modifier
-                                    .alpha(ghostOpacity)
                                     .then(
                                         if (rotationAngle % 180 != 0) {
                                             Modifier.layout { measurable, constraints ->
@@ -239,12 +265,36 @@ fun CameraTab(liveEnabled: Boolean, onLiveEnabledChange: (Boolean) -> Unit) {
                                         } else Modifier.fillMaxSize()
                                     )
                                     .graphicsLayer {
+                                        // Consolidated graphics layer for better stability on Android 9
                                         rotationZ = rotationAngle.toFloat()
                                         if (selectedCamera?.facing == CameraCharacteristics.LENS_FACING_FRONT) {
                                             if (rotationAngle % 180 != 0) scaleY = -1f else scaleX = -1f
                                         }
+
+                                        blendMode = when (ghostMode) {
+                                            1 -> BlendMode.Difference
+                                            else -> BlendMode.SrcOver
+                                        }
+
+                                        alpha = when {
+                                            ghostMode == 2 -> {
+                                                // Blink: 1s cycle (500ms on, 500ms off)
+                                                if ((metronomeNanos / 500_000_000L) % 2 == 0L) 1f else 0f
+                                            }
+                                            ghostMode == 1 || ghostMode == 3 -> 1f // Difference/Edge mode works best at 100% alpha
+                                            ghostOscillationEnabled -> {
+                                                // 3000ms full cycle (1500ms each way)
+                                                val period = 3000_000_000L
+                                                val progress = (metronomeNanos % period).toFloat() / period
+                                                val wave = if (progress < 0.5f) progress * 2f else (1f - progress) * 2f
+                                                // Apply easing manually for smoother turns
+                                                val eased = if (wave < 0.5f) 2f * wave * wave else 1f - (-2f * wave + 2f).let { it * it } / 2f
+                                                ghostOscillationRange.start + (ghostOscillationRange.endInclusive - ghostOscillationRange.start) * eased
+                                            }
+                                            else -> ghostOpacity
+                                        }
                                     },
-                                contentScale = ContentScale.FillBounds
+                                contentScale = ContentScale.Fit
                             )
                         }
                     }
@@ -256,7 +306,20 @@ fun CameraTab(liveEnabled: Boolean, onLiveEnabledChange: (Boolean) -> Unit) {
                         modifier = Modifier
                             .align(Alignment.TopCenter)
                             .padding(top = 16.dp)
-                            .alpha(ghostOpacity),
+                            .graphicsLayer {
+                                alpha = when {
+                                    ghostMode == 2 -> if ((metronomeNanos / 500_000_000L) % 2 == 0L) 1f else 0f
+                                    ghostMode == 1 || ghostMode == 3 -> 1f
+                                    ghostOscillationEnabled -> {
+                                        val period = 3000_000_000L
+                                        val progress = (metronomeNanos % period).toFloat() / period
+                                        val wave = if (progress < 0.5f) progress * 2f else (1f - progress) * 2f
+                                        val eased = if (wave < 0.5f) 2f * wave * wave else 1f - (-2f * wave + 2f).let { it * it } / 2f
+                                        ghostOscillationRange.start + (ghostOscillationRange.endInclusive - ghostOscillationRange.start) * eased
+                                    }
+                                    else -> ghostOpacity
+                                }
+                            },
                         color = Color.Black.copy(alpha = 0.5f),
                         shape = RoundedCornerShape(4.dp)
                     ) {
@@ -289,7 +352,7 @@ fun CameraTab(liveEnabled: Boolean, onLiveEnabledChange: (Boolean) -> Unit) {
                         .align(Alignment.TopEnd)
                         .padding(12.dp)
                         .clip(CircleShape)
-                        .clickable(enabled = hasGhostPhoto.value) { showGhost = !showGhost },
+                        .clickable(enabled = hasGhostPhoto.value) { onShowGhostChange(!showGhost) },
                     color = when {
                         !hasGhostPhoto.value -> Color.Gray.copy(alpha = 0.2f)
                         showGhost -> MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
@@ -318,7 +381,7 @@ fun CameraTab(liveEnabled: Boolean, onLiveEnabledChange: (Boolean) -> Unit) {
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
                         .background(Color.Black.copy(alpha = 0.5f))
-                        .height(40.dp),
+                        .height(48.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     when {
@@ -333,6 +396,8 @@ fun CameraTab(liveEnabled: Boolean, onLiveEnabledChange: (Boolean) -> Unit) {
                             Slider(
                                 value = ghostOpacity,
                                 onValueChange = { ghostOpacity = it },
+                                onValueChangeFinished = { settings.ghostOpacity = ghostOpacity },
+                                enabled = ghostMode == 0 && !ghostOscillationEnabled,
                                 valueRange = 0.05f..0.95f,
                                 modifier = Modifier.padding(horizontal = 24.dp),
                                 colors = SliderDefaults.colors(
@@ -388,6 +453,60 @@ fun CameraTab(liveEnabled: Boolean, onLiveEnabledChange: (Boolean) -> Unit) {
 
                     if (showGhost) {
                         HorizontalDivider(modifier = Modifier.alpha(0.3f))
+                        Text("Ghost-Modus", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 4.dp))
+                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                            val modes = listOf("Normal", "Differenz", "Blinken", "Kanten")
+                            val isDifferenceSupported = Build.VERSION.SDK_INT >= 29
+                            
+                            modes.forEachIndexed { index, label ->
+                                val enabled = if (index == 1) isDifferenceSupported else true
+                                SegmentedButton(
+                                    selected = ghostMode == index,
+                                    onClick = { ghostMode = index },
+                                    enabled = enabled,
+                                    shape = SegmentedButtonDefaults.itemShape(index = index, count = modes.size)
+                                ) {
+                                    Text(label, style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
+                        if (Build.VERSION.SDK_INT < 29) {
+                            Text(
+                                "Differenz-Modus benötigt Android 10+",
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
+                        
+                        HorizontalDivider(modifier = Modifier.alpha(0.3f))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Automatisches Pendeln", modifier = Modifier.weight(1f))
+                            Switch(
+                                checked = ghostOscillationEnabled, 
+                                onCheckedChange = { ghostOscillationEnabled = it },
+                                enabled = ghostMode != 2 // Disable oscillation in blink mode
+                            )
+                        }
+                        if (ghostOscillationEnabled) {
+                            Column(Modifier.padding(vertical = 8.dp)) {
+                                Text(
+                                    "Pendel-Bereich: ${(ghostOscillationRange.start * 100).toInt()}% – ${(ghostOscillationRange.endInclusive * 100).toInt()}%",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                RangeSlider(
+                                    value = ghostOscillationRange,
+                                    onValueChange = { ghostOscillationRange = it },
+                                    onValueChangeFinished = {
+                                        settings.ghostOscillationMin = ghostOscillationRange.start
+                                        settings.ghostOscillationMax = ghostOscillationRange.endInclusive
+                                    },
+                                    valueRange = 0.05f..0.95f,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        }
+
                         TextButton(
                             onClick = { scope.launch { ghostPhotoState = GhostPhotoState.Loading; ghostPhotoState = loadGhostPhotoState(context, selectedCameraLabel) } },
                             modifier = Modifier.align(Alignment.End)

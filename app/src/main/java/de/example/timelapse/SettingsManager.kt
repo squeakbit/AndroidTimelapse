@@ -34,9 +34,21 @@ class SettingsManager(context: Context) {
     var showGhost: Boolean
         get() = p.getBoolean("show_ghost", false)
         set(v) = p.edit().putBoolean("show_ghost", v).apply()
+    var ghostMode: Int
+        get() = p.getInt("ghost_mode", 0)
+        set(v) = p.edit().putInt("ghost_mode", v).apply()
     var ghostOpacity: Float
         get() = p.getFloat("ghost_opacity", 0.4f)
         set(v) = p.edit().putFloat("ghost_opacity", v).apply()
+    var ghostOscillationEnabled: Boolean
+        get() = p.getBoolean("ghost_osc_enabled", false)
+        set(v) = p.edit().putBoolean("ghost_osc_enabled", v).apply()
+    var ghostOscillationMin: Float
+        get() = p.getFloat("ghost_osc_min", 0.2f)
+        set(v) = p.edit().putFloat("ghost_osc_min", v).apply()
+    var ghostOscillationMax: Float
+        get() = p.getFloat("ghost_osc_max", 0.8f)
+        set(v) = p.edit().putFloat("ghost_osc_max", v).apply()
     /**
      * Freely chosen set of camera IDs to capture with on every scheduled
      * cycle (in no particular guaranteed order - see

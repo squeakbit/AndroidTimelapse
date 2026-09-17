@@ -71,7 +71,7 @@ class MqttDiscovery(private val mqtt: MqttClientManager, private val s: Settings
             if (unit == "timestamp") put("device_class", "timestamp")
             else if (unit != null) {
                 put("unit_of_measurement", unit)
-                put("device_class", "battery")
+                if (id == "battery") put("device_class", "battery")
                 put("state_class", "measurement")
             }
         })

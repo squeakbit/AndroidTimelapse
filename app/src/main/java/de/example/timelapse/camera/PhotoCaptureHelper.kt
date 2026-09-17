@@ -25,17 +25,26 @@ object PhotoCaptureHelper {
     private const val COUNTER_PREFS = "capture_counters"
 
     /**
-     * Captures a low-resolution preview image for the UI.
+     * Captures a low-resolution preview image for the UI, dynamically choosing
+     * a resolution that matches the requested aspect ratio to avoid black bars.
      */
     suspend fun capturePreview(context: Context, cameraId: String): File? = withContext(Dispatchers.IO) {
         val settings = SettingsManager(context)
         val (rw, rh) = resolveResolution(settings, cameraId)
-        val w = if (rw > rh) 1024 else 768
-        val h = if (rw > rh) 768 else 1024
+        val targetAspect = rw.toFloat() / rh
+
+        // Find a supported JPEG size that matches the aspect ratio of the final capture
+        val cameraInfo = CameraRepository(context).list().firstOrNull { it.id == cameraId }
+        val previewSize = cameraInfo?.sizes?.filter {
+            Math.abs((it.width.toFloat() / it.height) - targetAspect) < 0.05
+        }?.reversed()?.firstOrNull { it.width >= 1024 || it.height >= 1024 }
+            ?: cameraInfo?.sizes?.lastOrNull()
+            ?: SizeOption(rw, rh)
+
         val camera = Camera2Capture(context)
         val temp = File.createTempFile("preview-", ".jpg", context.cacheDir)
         try {
-            if (camera.capture(cameraId, w, h, 80, temp)) temp else null
+            if (camera.capture(cameraId, previewSize.width, previewSize.height, 80, temp)) temp else null
         } catch (_: Throwable) {
             temp.delete()
             null

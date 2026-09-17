@@ -188,9 +188,12 @@ class CameraForegroundService : Service() {
                 if (s.manualUploadRequested) {
                     try {
                         SmbUploader(this).uploadPendingPhotos()
+                    } catch (t: Throwable) {
+                        Log.e("Timelapse", "Manual upload failed", t)
+                    } finally {
                         s.manualUploadRequested = false
                         mqtt.publish("timelapse/${s.deviceId}/upload/state", "OFF")
-                    } catch (_: Throwable) {}
+                    }
                 }
                 mqtt.close()
             } catch (t: Throwable) {

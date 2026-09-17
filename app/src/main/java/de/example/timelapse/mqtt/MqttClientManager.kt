@@ -45,7 +45,14 @@ class MqttClientManager(private val context:Context){
     override fun connectComplete(reconnect: Boolean, serverURI: String?) {}
     override fun authPacketArrived(reasonCode: Int, properties: MqttProperties?) {}
    })
-   delay(3000) // Wait for retained message
+   delay(2000) // Wait for retained message
+   if (settings.manualUploadRequested) {
+    // Clear the retained ON command from the 'set' topic so it doesn't
+    // re-trigger on next connection, but keep the 'state' ON until the
+    // upload actually finishes.
+    val msg = MqttMessage("".toByteArray()).apply { qos = 1; isRetained = true }
+    client?.publish(topic, msg)
+   }
    client?.unsubscribe(topic)?.waitForCompletion(2000)
   } catch (_: Throwable) {}
  }
