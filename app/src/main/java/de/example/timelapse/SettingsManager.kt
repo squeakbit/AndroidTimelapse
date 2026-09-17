@@ -161,6 +161,9 @@ class SettingsManager(context: Context) {
     var lastCaptureAt: Long
         get() = p.getLong("last_capture_at", 0L)
         set(v) = p.edit().putLong("last_capture_at", v).apply()
+    var manualUploadRequested: Boolean
+        get() = p.getBoolean("manual_upload_requested", false)
+        set(v) = p.edit().putBoolean("manual_upload_requested", v).apply()
     val mqttClientId: String
         get() = "timelapse-$deviceId"
 }

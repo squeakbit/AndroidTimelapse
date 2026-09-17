@@ -3,6 +3,7 @@ package de.example.timelapse
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.TimePickerDialog
+import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -15,6 +16,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.PowerManager
+import android.provider.MediaStore
 import android.provider.Settings
 import android.util.Log
 import android.view.Surface
@@ -47,6 +49,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.foundation.text.KeyboardOptions
@@ -105,6 +108,27 @@ private suspend fun loadGhostPhotoState(context: Context, cameraLabel: String?):
         }
     }
 
+/**
+ * Checks whether a DB entry not only exists but its underlying file/URI is
+ * actually openable right now. A DB row alone isn't enough evidence that a
+ * "ghost" photo is usable - e.g. after the user deleted the file outside
+ * the app, or copied a replacement back without the app having read access
+ * to it (see Android manifest for READ_MEDIA_IMAGES permission) - so every
+ * Storage angle) - so every caller that decides whether to enable/show the
+ * GHOST feature should go through this instead of a bare null-check.
+ */
+private suspend fun hasReadableGhostPhoto(context: Context, cameraLabel: String?): Boolean =
+    withContext(Dispatchers.IO) {
+        if (cameraLabel == null) return@withContext false
+        val entry = AppDatabase.getInstance(context).photoDao().getLastPhotoByCameraLabel(cameraLabel)
+            ?: return@withContext false
+        try {
+            context.contentResolver.openInputStream(Uri.parse(entry.localPath))?.use { true } ?: false
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
 private fun exifRotationDegrees(exif: ExifInterface): Int =
     when (exif.getAttributeInt(
         ExifInterface.TAG_ORIENTATION,
@@ -156,12 +180,23 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
     private val storagePermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    // Needed to READ media that this app did not itself create via MediaStore
+    // (e.g. "ghost" reference photos copied back onto the device manually).
+    // Photos captured by the app itself (PhotoCaptureHelper) don't need this,
+    // since apps always retain read/write access to their own MediaStore
+    // entries - this is specifically for third-party-written files.
+    private val mediaPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         cameraPermission.launch(Manifest.permission.CAMERA)
         if (Build.VERSION.SDK_INT < 29) {
             storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        } else if (Build.VERSION.SDK_INT >= 33) {
+            mediaPermission.launch(Manifest.permission.READ_MEDIA_IMAGES)
+        } else {
+            mediaPermission.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
         AlarmScheduler(this).scheduleAll()
         ensureCameraServiceRunning()
@@ -193,7 +228,7 @@ class MainActivity : ComponentActivity() {
         try {
             val settings = SettingsManager(this@MainActivity)
             val (rw, rh) = PhotoCaptureHelper.resolveResolution(settings, cameraId)
-            val (w, h) = rw to rh 
+            val (w, h) = rw to rh
             val temp = File.createTempFile("preview-", ".jpg", cacheDir)
             val camera = Camera2Capture(this@MainActivity)
             try {
@@ -296,8 +331,8 @@ class MainActivity : ComponentActivity() {
         ElevatedCard(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.elevatedCardColors(
-                containerColor = if (checked) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f) 
-                                 else MaterialTheme.colorScheme.surface
+                containerColor = if (checked) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
+                else MaterialTheme.colorScheme.surface
             )
         ) {
             Column(Modifier.padding(8.dp)) {
@@ -467,7 +502,7 @@ class MainActivity : ComponentActivity() {
                     value = interval,
                     onValueChange = { value ->
                         interval = value.filter(Char::isDigit)
-                        value.toIntOrNull()?.let { 
+                        value.toIntOrNull()?.let {
                             settings.captureIntervalMinutes = it
                             AlarmScheduler(this@MainActivity).scheduleAll()
                         }
@@ -518,7 +553,6 @@ class MainActivity : ComponentActivity() {
                                 try {
                                     val mqtt = MqttClientManager(this@MainActivity)
                                     if (result != null) {
-                                        mqtt.publish("timelapse/${settings.deviceId}/last_upload_count", result.uploaded.toString())
                                         mqtt.publish("timelapse/${settings.deviceId}/last_upload", Instant.now().toString())
                                     }
                                     MqttDiscovery(mqtt, settings, this@MainActivity).publishState()
@@ -581,7 +615,7 @@ class MainActivity : ComponentActivity() {
         val settings = remember { SettingsManager(this) }
         val previewController = remember { CameraPreviewController(this) }
         var cameras by remember { mutableStateOf(emptyList<CameraInfo>()) }
-        
+
         var selectedCameraId by remember { mutableStateOf(settings.lastPreviewCameraId) }
         var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
         var previewLoading by remember { mutableStateOf(false) }
@@ -610,17 +644,13 @@ class MainActivity : ComponentActivity() {
 
         val hasGhostPhoto = remember(selectedCameraLabel) { mutableStateOf(false) }
         LaunchedEffect(selectedCameraLabel) {
-            val exists = if (selectedCameraLabel != null) {
-                withContext(Dispatchers.IO) {
-                    val dbEntry = AppDatabase.getInstance(this@MainActivity).photoDao().getLastPhotoByCameraLabel(selectedCameraLabel)
-                    if (dbEntry != null) {
-                        try {
-                            contentResolver.openInputStream(Uri.parse(dbEntry.localPath))?.use { true } ?: false
-                        } catch (_: Throwable) { false }
-                    } else false
-                }
-            } else false
-            
+            // Uses the shared readability check (DB entry AND the file/URI
+            // actually opens) rather than a bare DB null-check, so a photo
+            // that's registered but not readable (e.g. missing storage
+            // permission, or the file was deleted/replaced externally)
+            // correctly disables the GHOST button instead of enabling a
+            // feature that then silently shows nothing.
+            val exists = hasReadableGhostPhoto(this@MainActivity, selectedCameraLabel)
             hasGhostPhoto.value = exists
             if (!exists) showGhost = false
         }
@@ -643,14 +673,23 @@ class MainActivity : ComponentActivity() {
             PhotoCaptureHelper.resolveResolution(settings, selectedCameraId)
         else settings.cameraWidth to settings.cameraHeight
 
-        val displayRotation = if (Build.VERSION.SDK_INT >= 30) display?.rotation ?: Surface.ROTATION_0 
-                              else @Suppress("DEPRECATION") windowManager.defaultDisplay.rotation
+        val displayRotation = if (Build.VERSION.SDK_INT >= 30) display?.rotation ?: Surface.ROTATION_0
+        else @Suppress("DEPRECATION") windowManager.defaultDisplay.rotation
         val deviceRotationDegrees = when (displayRotation) {
             Surface.ROTATION_90 -> 90; Surface.ROTATION_180 -> 180; Surface.ROTATION_270 -> 270; else -> 0
         }
         val sensorOrientation = selectedCamera?.orientation ?: 0
         val isPortrait = (sensorOrientation + deviceRotationDegrees) % 180 != 0
+        
+        // Use the native landscape aspect for the internal content, 
+        // but the uiAspect for the container.
         val uiAspect = if (isPortrait) rawHeight.toFloat() / rawWidth else rawWidth.toFloat() / rawHeight
+        
+        val rotationAngle = if (selectedCamera?.facing == CameraCharacteristics.LENS_FACING_FRONT) {
+            (sensorOrientation - deviceRotationDegrees + 360) % 360
+        } else {
+            (sensorOrientation + deviceRotationDegrees) % 360
+        }
 
         LaunchedEffect(selectedCameraId, liveEnabled) {
             if (!liveEnabled && selectedCameraId.isNotBlank()) {
@@ -697,18 +736,69 @@ class MainActivity : ComponentActivity() {
                                 }
                             })
                             previewLoading -> CircularProgressIndicator()
-                            previewBitmap != null -> Image(bitmap = previewBitmap!!.asImageBitmap(), contentDescription = "Preview", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds)
+                            previewBitmap != null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Image(
+                                    bitmap = previewBitmap!!.asImageBitmap(), 
+                                    contentDescription = "Preview", 
+                                    modifier = Modifier
+                                        .then(
+                                            if (rotationAngle % 180 != 0) {
+                                                Modifier.layout { measurable, constraints ->
+                                                    val placeable = measurable.measure(constraints.copy(
+                                                        minWidth = constraints.maxHeight,
+                                                        maxWidth = constraints.maxHeight,
+                                                        minHeight = constraints.maxWidth,
+                                                        maxHeight = constraints.maxWidth
+                                                    ))
+                                                    layout(constraints.maxWidth, constraints.maxHeight) {
+                                                        placeable.place(
+                                                            x = (constraints.maxWidth - placeable.width) / 2,
+                                                            y = (constraints.maxHeight - placeable.height) / 2
+                                                        )
+                                                    }
+                                                }
+                                            } else Modifier.fillMaxSize()
+                                        )
+                                        .graphicsLayer { rotationZ = rotationAngle.toFloat() }, 
+                                    contentScale = ContentScale.FillBounds
+                                )
+                            }
                             else -> Text("Kamera bereit", color = Color.Gray)
                         }
                     }
                     if (showGhost) {
                         val gs = ghostPhotoState
                         if (gs is GhostPhotoState.Loaded) {
-                            Box(Modifier.fillMaxSize()) {
+                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                 Image(
                                     bitmap = gs.bitmap.asImageBitmap(),
                                     contentDescription = "Ghost",
-                                    modifier = Modifier.fillMaxSize().alpha(ghostOpacity).then(if (selectedCamera?.facing == CameraCharacteristics.LENS_FACING_FRONT) Modifier.graphicsLayer(scaleX = -1f) else Modifier),
+                                    modifier = Modifier
+                                        .alpha(ghostOpacity)
+                                        .then(
+                                            if (rotationAngle % 180 != 0) {
+                                                Modifier.layout { measurable, constraints ->
+                                                    val placeable = measurable.measure(constraints.copy(
+                                                        minWidth = constraints.maxHeight,
+                                                        maxWidth = constraints.maxHeight,
+                                                        minHeight = constraints.maxWidth,
+                                                        maxHeight = constraints.maxWidth
+                                                    ))
+                                                    layout(constraints.maxWidth, constraints.maxHeight) {
+                                                        placeable.place(
+                                                            x = (constraints.maxWidth - placeable.width) / 2,
+                                                            y = (constraints.maxHeight - placeable.height) / 2
+                                                        )
+                                                    }
+                                                }
+                                            } else Modifier.fillMaxSize()
+                                        )
+                                        .graphicsLayer {
+                                            rotationZ = rotationAngle.toFloat()
+                                            if (selectedCamera?.facing == CameraCharacteristics.LENS_FACING_FRONT) {
+                                                if (rotationAngle % 180 != 0) scaleY = -1f else scaleX = -1f
+                                            }
+                                        },
                                     contentScale = ContentScale.FillBounds
                                 )
                             }
@@ -733,7 +823,7 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                     }
-                    
+
                     Surface(
                         modifier = Modifier
                             .align(Alignment.TopStart)
@@ -763,16 +853,16 @@ class MainActivity : ComponentActivity() {
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
                             Icon(
-                                Icons.Default.Layers, 
-                                null, 
-                                modifier = Modifier.size(14.dp), 
+                                Icons.Default.Layers,
+                                null,
+                                modifier = Modifier.size(14.dp),
                                 tint = if (hasGhostPhoto.value) Color.White else Color.Gray
                             )
                             Spacer(Modifier.width(6.dp))
                             Text(
-                                "GHOST", 
-                                color = if (hasGhostPhoto.value) Color.White else Color.Gray, 
-                                fontWeight = FontWeight.Bold, 
+                                "GHOST",
+                                color = if (hasGhostPhoto.value) Color.White else Color.Gray,
+                                fontWeight = FontWeight.Bold,
                                 fontSize = 11.sp
                             )
                         }
@@ -810,6 +900,13 @@ class MainActivity : ComponentActivity() {
                             showGhost && ghostPhotoState is GhostPhotoState.Loading -> {
                                 Text("Lade Foto …", color = Color.White, style = MaterialTheme.typography.labelSmall)
                             }
+                            showGhost && ghostPhotoState is GhostPhotoState.LoadFailed -> {
+                                Text(
+                                    "Referenzfoto konnte nicht geladen werden (fehlende Berechtigung?)",
+                                    color = Color(0xFFFF8A80),
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
                             else -> {
                                 Text(
                                     "${facingLabel(selectedCamera?.facing ?: -1)} Kamera ${selectedCameraId}",
@@ -843,28 +940,6 @@ class MainActivity : ComponentActivity() {
                             Text("Raster einblenden", modifier = Modifier.weight(1f))
                             Switch(checked = showGrid, onCheckedChange = { showGrid = it })
                         }
-                        
-                        var scanning by remember { mutableStateOf(false) }
-                        TextButton(
-                            enabled = !scanning,
-                            onClick = { 
-                                scanning = true
-                                lifecycleScope.launch {
-                                    withContext(Dispatchers.IO) { scanForReferencePhotos(this@MainActivity) }
-                                    // Refresh the state
-                                    val exists = selectedCameraLabel?.let { label ->
-                                        AppDatabase.getInstance(this@MainActivity).photoDao().getLastPhotoByCameraLabel(label) != null
-                                    } ?: false
-                                    hasGhostPhoto.value = exists
-                                    scanning = false
-                                }
-                            },
-                            modifier = Modifier.align(Alignment.Start)
-                        ) {
-                            Icon(Icons.Default.Search, null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text(if (scanning) "Suche..." else "Referenzfotos im Speicher suchen")
-                        }
 
                         if (showGhost) {
                             HorizontalDivider(modifier = Modifier.alpha(0.3f))
@@ -886,7 +961,7 @@ class MainActivity : ComponentActivity() {
             items(cameras, key = { "tab_select_${it.id}" }) { camera ->
                 ElevatedCard(
                     modifier = Modifier.fillMaxWidth(),
-                    onClick = { 
+                    onClick = {
                         selectedCameraId = camera.id
                         settings.lastPreviewCameraId = camera.id
                     },
@@ -895,7 +970,7 @@ class MainActivity : ComponentActivity() {
                     )
                 ) {
                     Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        RadioButton(selected = selectedCameraId == camera.id, onClick = { 
+                        RadioButton(selected = selectedCameraId == camera.id, onClick = {
                             selectedCameraId = camera.id
                             settings.lastPreviewCameraId = camera.id
                         })
@@ -946,7 +1021,7 @@ class MainActivity : ComponentActivity() {
                 val selectedCamera = cameras.firstOrNull { it.id == settings.cameraId } ?: cameras.firstOrNull()
                 var resolutionExpanded by remember { mutableStateOf(false) }
                 val currentSize = selectedCamera?.sizes?.firstOrNull { it.width == settings.cameraWidth && it.height == settings.cameraHeight } ?: selectedCamera?.sizes?.firstOrNull()
-                
+
                 ExposedDropdownMenuBox(expanded = resolutionExpanded, onExpandedChange = { resolutionExpanded = it }) {
                     OutlinedTextField(
                         value = currentSize?.toString() ?: "Lade...",
@@ -958,9 +1033,9 @@ class MainActivity : ComponentActivity() {
                     )
                     ExposedDropdownMenu(expanded = resolutionExpanded, onDismissRequest = { resolutionExpanded = false }) {
                         (selectedCamera?.sizes ?: emptyList()).forEach { size ->
-                            DropdownMenuItem(text = { Text(size.toString()) }, onClick = { 
+                            DropdownMenuItem(text = { Text(size.toString()) }, onClick = {
                                 settings.cameraWidth = size.width; settings.cameraHeight = size.height
-                                resolutionExpanded = false 
+                                resolutionExpanded = false
                             })
                         }
                     }
@@ -974,17 +1049,17 @@ class MainActivity : ComponentActivity() {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("Autoupload", modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
                             Switch(
-                                checked = smbUploadEnabled, 
-                                onCheckedChange = { 
+                                checked = smbUploadEnabled,
+                                onCheckedChange = {
                                     smbUploadEnabled = it
                                     settings.smbUploadEnabled = it
-                                    AlarmScheduler(this@MainActivity).scheduleAll() 
+                                    AlarmScheduler(this@MainActivity).scheduleAll()
                                 }
                             )
                         }
 
                         Button(
-                            onClick = { 
+                            onClick = {
                                 TimePickerDialog(this@MainActivity, { _, h, m ->
                                     smbUploadHour = h; smbUploadMinute = m
                                     settings.smbUploadHour = h; settings.smbUploadMinute = m
@@ -1006,10 +1081,10 @@ class MainActivity : ComponentActivity() {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("Bilder nach Upload löschen", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
                             Switch(
-                                checked = deleteAfterUpload, 
-                                onCheckedChange = { 
+                                checked = deleteAfterUpload,
+                                onCheckedChange = {
                                     deleteAfterUpload = it
-                                    settings.deleteAfterUpload = it 
+                                    settings.deleteAfterUpload = it
                                 }
                             )
                         }
@@ -1021,13 +1096,13 @@ class MainActivity : ComponentActivity() {
 
                         Button(
                             enabled = !smbTesting,
-                            onClick = { 
+                            onClick = {
                                 smbTesting = true; smbTestStatus = "Teste..."
-                                lifecycleScope.launch { 
+                                lifecycleScope.launch {
                                     val r = SmbUploader(this@MainActivity).testConnection()
                                     smbTestStatus = r.fold(onSuccess = { "OK: $it" }, onFailure = { "Fehler" })
-                                    smbTesting = false 
-                                } 
+                                    smbTesting = false
+                                }
                             },
                             modifier = Modifier.fillMaxWidth()
                         ) { Text("SMB Testen") }
@@ -1046,13 +1121,13 @@ class MainActivity : ComponentActivity() {
 
                         Button(
                             enabled = !discoveryTesting,
-                            onClick = { 
+                            onClick = {
                                 discoveryTesting = true; discoveryStatus = "Sende..."
-                                lifecycleScope.launch { 
-                                    try { withContext(Dispatchers.IO) { MqttClientManager(this@MainActivity).connectAndDiscover() }; discoveryStatus = "OK" } 
+                                lifecycleScope.launch {
+                                    try { withContext(Dispatchers.IO) { MqttClientManager(this@MainActivity).connectAndDiscover() }; discoveryStatus = "OK" }
                                     catch (e: Exception) { discoveryStatus = "Fehler" }
-                                    discoveryTesting = false 
-                                } 
+                                    discoveryTesting = false
+                                }
                             },
                             modifier = Modifier.fillMaxWidth()
                         ) { Text("Discovery Senden") }
@@ -1065,43 +1140,13 @@ class MainActivity : ComponentActivity() {
                 SectionHeader("System", Icons.Default.Build)
                 val powerManager = remember { getSystemService(PowerManager::class.java) }
                 val ignoringOpt = remember { mutableStateOf(powerManager.isIgnoringBatteryOptimizations(packageName)) }
-                
+
                 Button(
                     onClick = { requestIgnoreBatteryOptimizations() },
                     colors = ButtonDefaults.buttonColors(containerColor = if (ignoringOpt.value) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.error),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(if (ignoringOpt.value) "Akku-Optimierung: AUS" else "Optimierung deaktivieren!", color = if (ignoringOpt.value) MaterialTheme.colorScheme.onSurfaceVariant else Color.White)
-                }
-            }
-        }
-    }
-
-    /**
-     * Scans the storage for existing timelapse photos and adds them to the 
-     * database if they aren't already registered. This allows the ghost feature 
-     * to recognize manually copied files.
-     */
-    private suspend fun scanForReferencePhotos(context: Context) {
-        val root = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "Timelapse")
-        if (!root.exists() || !root.isDirectory) return
-        
-        val dao = AppDatabase.getInstance(context).photoDao()
-        
-        root.listFiles()?.filter { it.isDirectory }?.forEach { dateFolder ->
-            dateFolder.listFiles()?.filter { it.extension.lowercase() == "jpg" }?.forEach { photoFile ->
-                val label = photoFile.name.substringBefore('_')
-                // Check if already in DB
-                val existing = dao.getLastPhotoByCameraLabel(label)
-                if (existing == null || !existing.fileName.equals(photoFile.name)) {
-                    // It's a new or different file, register it
-                    val entity = PhotoEntity(
-                        localPath = Uri.fromFile(photoFile).toString(),
-                        fileName = photoFile.name,
-                        capturedAt = photoFile.lastModified(),
-                        uploadedAt = System.currentTimeMillis() // Assume uploaded if copied back
-                    )
-                    dao.insert(entity)
                 }
             }
         }

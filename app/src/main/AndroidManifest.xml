@@ -1,4 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Kamera ist für diese App zwingend erforderlich (Kernfunktion ist die
+         Zeitrafferaufnahme; ohne Kamera bricht CameraForegroundService sofort
+         ab). required="true" sorgt dafür, dass der Play Store die App gar
+         nicht erst auf Geräten ohne Kamera anbietet - required="false" wäre
+         hier irreführend, da die App auf solchen Geräten nicht funktioniert. -->
+    <uses-feature android:name="android.hardware.camera" android:required="true"/>
+    <uses-feature android:name="android.hardware.camera.any" android:required="true"/>
+
     <uses-permission android:name="android.permission.CAMERA"/>
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
@@ -16,6 +24,16 @@
          Scoped-Storage-Pfad in PhotoCaptureHelper verwendet wird, der diese
          Berechtigung nicht braucht. -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28"/>
+
+    <!-- Lesezugriff auf Mediendateien, die NICHT von dieser App selbst über
+         MediaStore erzeugt wurden (z.B. manuell/per ADB/Dateimanager zurück-
+         kopierte "Ghost"-Referenzfotos). Ohne diese Berechtigung kann die App
+         unter Scoped Storage (API 29+) fremde Bilder weder auflisten noch via
+         ContentResolver öffnen - eigene, per MediaStore.insert() angelegte
+         Fotos (PhotoCaptureHelper) sind davon nicht betroffen und funktionieren
+         auch ohne diese Berechtigung. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
 
     <application
         android:name=".TimelapseApplication"

@@ -9,6 +9,9 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import de.example.timelapse.*
 import de.example.timelapse.camera.PhotoCaptureHelper
+import de.example.timelapse.mqtt.MqttClientManager
+import de.example.timelapse.mqtt.MqttDiscovery
+import de.example.timelapse.smb.SmbUploader
 import java.util.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
@@ -176,8 +179,13 @@ class CameraForegroundService:Service(){
    val cameras=PhotoCaptureHelper.resolveCameras(this,s)
    if(cameras.isEmpty()){reportError("Keine passende Kamera gefunden");return}
    val failures=mutableListOf<String>()
-   for(camera in cameras){
+   for((index, camera) in cameras.withIndex()){
     try{
+     // Give the hardware some breathing room between cameras, 
+     // especially on older devices where the OS might be slow 
+     // to fully release the previous camera sensor.
+     if (index > 0) delay(2000)
+     
      val (w,h)=PhotoCaptureHelper.resolveResolution(s,camera.id)
      PhotoCaptureHelper.captureAndSave(this,camera.id,w,h,s.jpegQuality,PhotoCaptureHelper.cameraLabel(camera))
     }catch(t:Throwable){
@@ -192,10 +200,25 @@ class CameraForegroundService:Service(){
    // still alive. This is what replaces the old separate hourly heartbeat.
    try{
     val mqtt=de.example.timelapse.mqtt.MqttClientManager(this)
+    mqtt.subscribeAndCheckUpload() // Check for "Manual Upload" button press in HA
+    
     if(failures.isNotEmpty()) mqtt.publish("timelapse/${s.deviceId}/last_error","Aufnahme fehlgeschlagen: "+failures.joinToString("; "))
-    de.example.timelapse.mqtt.MqttDiscovery(mqtt,s,this).publishState()
+    MqttDiscovery(mqtt,s,this).publishState()
     mqtt.close()
-   }catch(t:Throwable){android.util.Log.w("Timelapse","mqtt state publish failed",t)}
+   }catch(t:Throwable){
+    Log.w("Timelapse","mqtt state publish failed",t)}
+   
+   // If MQTT check (above) or previous logic set this to true, run upload now.
+   if (s.manualUploadRequested) {
+    try {
+     SmbUploader(this).uploadPendingPhotos()
+     s.manualUploadRequested = false
+     // Re-open MQTT briefly to set the switch back to OFF
+     val mqtt= MqttClientManager(this)
+     mqtt.publish("timelapse/${s.deviceId}/upload/state", "OFF")
+     mqtt.close()
+    } catch (_: Throwable) {}
+   }
   }catch(t:Throwable){
    android.util.Log.e("Timelapse","capture failed",t)
    reportError("Aufnahme fehlgeschlagen: ${t.message ?: t.javaClass.simpleName}")
