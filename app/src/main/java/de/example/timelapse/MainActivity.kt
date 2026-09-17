@@ -3,15 +3,20 @@ package de.example.timelapse
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.TimePickerDialog
+import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCharacteristics
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.os.PowerManager
 import android.provider.Settings
+import android.util.Log
 import android.view.Surface
 import android.view.TextureView
 import androidx.activity.ComponentActivity
@@ -19,26 +24,39 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
+import androidx.exifinterface.media.ExifInterface
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -49,25 +67,23 @@ import de.example.timelapse.camera.CameraRepository
 import de.example.timelapse.camera.CameraInfo
 import de.example.timelapse.camera.PhotoCaptureHelper
 import de.example.timelapse.data.AppDatabase
+import de.example.timelapse.data.PhotoEntity
 import de.example.timelapse.mqtt.MqttClientManager
 import de.example.timelapse.mqtt.MqttDiscovery
 import de.example.timelapse.service.CameraForegroundService
 import de.example.timelapse.smb.SmbUploader
+import de.example.timelapse.ui.theme.TimelapseTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.text.SimpleDateFormat
+import java.time.Instant
+import java.util.Date
+import java.util.Locale
 import kotlin.time.Duration.Companion.seconds
 
-/**
- * Result of trying to load the most recently captured photo for the
- * "Letztes Foto einblenden" ghost-overlay in [MainActivity]'s Kamera tab.
- * Modeled explicitly (rather than a nullable Bitmap) so the UI can tell
- * apart "nothing captured yet" from "a photo exists but couldn't be
- * loaded" (e.g. deleted from storage after upload) and show an accurate
- * message in each case instead of just silently showing nothing.
- */
 private sealed class GhostPhotoState {
     object Idle : GhostPhotoState()
     object Loading : GhostPhotoState()
@@ -76,26 +92,63 @@ private sealed class GhostPhotoState {
     data class Loaded(val bitmap: Bitmap) : GhostPhotoState()
 }
 
-/**
- * Loads the most recently captured photo (across all cameras) for the
- * ghost-overlay, decoded from its MediaStore URI. Never throws - any
- * failure (no photo recorded yet, file since deleted/moved, decode error)
- * comes back as a distinct [GhostPhotoState] rather than crashing the tab.
- */
-private suspend fun loadGhostPhotoState(context: android.content.Context): GhostPhotoState =
+private suspend fun loadGhostPhotoState(context: Context, cameraLabel: String?): GhostPhotoState =
     withContext(Dispatchers.IO) {
+        if (cameraLabel == null) return@withContext GhostPhotoState.NoPhoto
         try {
-            val photo = AppDatabase.getInstance(context).photoDao().getLastPhoto()
+            val photo = AppDatabase.getInstance(context).photoDao().getLastPhotoByCameraLabel(cameraLabel)
                 ?: return@withContext GhostPhotoState.NoPhoto
-            val uri = Uri.parse(photo.localPath)
-            val bitmap = context.contentResolver.openInputStream(uri)?.use { input ->
-                BitmapFactory.decodeStream(input)
-            }
+            val bitmap = decodeOrientedBitmap(context, Uri.parse(photo.localPath))
             if (bitmap != null) GhostPhotoState.Loaded(bitmap) else GhostPhotoState.LoadFailed
         } catch (_: Throwable) {
             GhostPhotoState.LoadFailed
         }
     }
+
+private fun exifRotationDegrees(exif: ExifInterface): Int =
+    when (exif.getAttributeInt(
+        ExifInterface.TAG_ORIENTATION,
+        ExifInterface.ORIENTATION_NORMAL
+    )) {
+        ExifInterface.ORIENTATION_ROTATE_90 -> 90
+        ExifInterface.ORIENTATION_ROTATE_180 -> 180
+        ExifInterface.ORIENTATION_ROTATE_270 -> 270
+        else -> 0
+    }
+
+private fun rotateBitmapIfNeeded(bitmap: Bitmap, degrees: Int): Bitmap {
+    if (degrees == 0) return bitmap
+    val matrix = Matrix().apply { postRotate(degrees.toFloat()) }
+    return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+}
+
+private fun decodeOrientedBitmap(path: String): Bitmap? {
+    val bitmap = BitmapFactory.decodeFile(path) ?: return null
+    val degrees = try {
+        exifRotationDegrees(ExifInterface(path))
+    } catch (_: Throwable) {
+        0
+    }
+    return rotateBitmapIfNeeded(bitmap, degrees)
+}
+
+private fun decodeOrientedBitmap(context: Context, uri: Uri): Bitmap? {
+    val resolver = context.contentResolver
+    val bitmap = try {
+        resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+    } catch (_: Throwable) {
+        null
+    } ?: return null
+
+    val degrees = try {
+        resolver.openFileDescriptor(uri, "r")?.use { pfd ->
+            exifRotationDegrees(ExifInterface(pfd.fileDescriptor))
+        } ?: 0
+    } catch (_: Throwable) {
+        0
+    }
+    return rotateBitmapIfNeeded(bitmap, degrees)
+}
 
 class MainActivity : ComponentActivity() {
 
@@ -107,34 +160,23 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         cameraPermission.launch(Manifest.permission.CAMERA)
-        // WRITE_EXTERNAL_STORAGE is only declared (maxSdkVersion=28) and only
-        // needed on API 26-28, where PhotoCaptureHelper's legacy-storage
-        // path writes directly into the public Pictures directory (no
-        // scoped storage yet on those OS versions). On API 29+ this
-        // permission doesn't even exist for the app anymore, so requesting
-        // it there would be a no-op at best and is skipped entirely.
         if (Build.VERSION.SDK_INT < 29) {
             storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }
-        // Self-heal scheduling on every launch: if alarms were ever lost
-        // (fresh install instead of update, OS/OEM cleared them, etc.) the
-        // app previously only re-armed them when a switch was toggled.
         AlarmScheduler(this).scheduleAll()
         ensureCameraServiceRunning()
-        setContent { AppRoot() }
+        setContent {
+            TimelapseTheme {
+                AppRoot()
+            }
+        }
     }
 
     override fun onResume() {
         super.onResume()
-        // The camera-type foreground service can only be *started* while
-        // the app is in the foreground (Android 14+ restriction) - so every
-        // time the app becomes visible is also our best opportunity to
-        // revive the service if it died in the background since we can't
-        // reliably restart it from a background alarm.
         ensureCameraServiceRunning()
     }
 
-    /** Starts CameraForegroundService if timelapse is enabled and it isn't already running. */
     private fun ensureCameraServiceRunning() {
         if (!SettingsManager(this).timelapseEnabled) return
         try {
@@ -143,24 +185,15 @@ class MainActivity : ComponentActivity() {
                 Intent(this, CameraForegroundService::class.java).setAction(CameraForegroundService.ACTION_START)
             )
         } catch (t: Throwable) {
-            android.util.Log.w("Timelapse", "failed to start camera service from foreground", t)
+            Log.w("Timelapse", "failed to start camera service from foreground", t)
         }
-    }
-
-    /** Scales down to [maxLongSide] while preserving the aspect ratio of the selected resolution. */
-    private fun previewCaptureSize(width: Int, height: Int, maxLongSide: Int = 1280): Pair<Int, Int> {
-        if (width <= 0 || height <= 0) return 640 to 480
-        val long = maxOf(width, height)
-        if (long <= maxLongSide) return width to height
-        val scale = maxLongSide.toFloat() / long
-        return (width * scale).toInt().coerceAtLeast(2) to (height * scale).toInt().coerceAtLeast(2)
     }
 
     private suspend fun capturePreview(cameraId: String): Bitmap? = withContext(Dispatchers.IO) {
         try {
             val settings = SettingsManager(this@MainActivity)
             val (rw, rh) = PhotoCaptureHelper.resolveResolution(settings, cameraId)
-            val (w, h) = previewCaptureSize(rw, rh)
+            val (w, h) = rw to rh 
             val temp = File.createTempFile("preview-", ".jpg", cacheDir)
             val camera = Camera2Capture(this@MainActivity)
             try {
@@ -168,7 +201,7 @@ class MainActivity : ComponentActivity() {
             } finally {
                 camera.close()
             }
-            val bmp = BitmapFactory.decodeFile(temp.absolutePath)
+            val bmp = decodeOrientedBitmap(temp.absolutePath)
             temp.delete()
             bmp
         } catch (_: Throwable) {
@@ -183,13 +216,10 @@ class MainActivity : ComponentActivity() {
         else -> "Unbekannt"
     }
 
+    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun AppRoot() {
         var tab by remember { mutableIntStateOf(0) }
-
-        // Die Kamera ist eine exklusive Ressource: Live-Vorschau (Kamera-Tab)
-        // und Testmodus (Start-Tab) dürfen nie gleichzeitig laufen, auch
-        // wenn sie jetzt auf getrennten Tabs liegen.
         var liveEnabled by remember { mutableStateOf(false) }
         var testModeEnabled by remember { mutableStateOf(false) }
         LaunchedEffect(liveEnabled) { if (liveEnabled) testModeEnabled = false }
@@ -207,17 +237,22 @@ class MainActivity : ComponentActivity() {
             onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
         }
 
-        MaterialTheme {
-            Column(Modifier.fillMaxSize()) {
-                Text(
-                    "Android Timelapse",
-                    style = MaterialTheme.typography.headlineMedium,
-                    modifier = Modifier.padding(16.dp)
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text("Android Timelapse", fontWeight = FontWeight.Bold) },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
                 )
+            }
+        ) { padding ->
+            Column(Modifier.fillMaxSize().padding(padding)) {
                 PrimaryTabRow(selectedTabIndex = tab) {
-                    Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Start") })
-                    Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Kamera") })
-                    Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("Einstellungen") })
+                    Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Start") }, icon = { Icon(Icons.Default.PlayArrow, null) })
+                    Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Kamera") }, icon = { Icon(Icons.Default.CameraAlt, null) })
+                    Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("Setup") }, icon = { Icon(Icons.Default.Settings, null) })
                 }
                 when (tab) {
                     0 -> HomeTab(testModeEnabled = testModeEnabled, onTestModeChange = { testModeEnabled = it })
@@ -228,13 +263,23 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * One row in the "Aufnahme-Kameras" checklist: a checkbox to include this
-     * camera in the capture set, plus - only while checked and only if the
-     * camera reports supported sizes - an optional per-camera resolution
-     * dropdown. Picking "Standard" clears the override so this camera goes
-     * back to using the global default resolution from the Settings tab.
-     */
+    @Composable
+    private fun SectionHeader(title: String, icon: ImageVector) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
+        ) {
+            Icon(icon, null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = title.uppercase(),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
+
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun CameraSelectionRow(
@@ -248,49 +293,65 @@ class MainActivity : ComponentActivity() {
         val defaultLabel = "${settings.cameraWidth} × ${settings.cameraHeight}"
         val currentLabel = override?.let { "${it.first} × ${it.second}" } ?: "Standard ($defaultLabel)"
 
-        Column(Modifier.fillMaxWidth()) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(checked = checked, onCheckedChange = onCheckedChange)
-                Text(
-                    "${camera.id} (${facingLabel(camera.facing)}${if (camera.logicalMultiCamera) ", logical" else ""})",
-                    modifier = Modifier.weight(1f)
-                )
-            }
-            if (checked && camera.sizes.isNotEmpty()) {
-                ExposedDropdownMenuBox(
-                    expanded = resExpanded,
-                    onExpandedChange = { resExpanded = it },
-                    modifier = Modifier.padding(start = 40.dp, end = 8.dp, bottom = 4.dp)
-                ) {
-                    OutlinedTextField(
-                        value = currentLabel,
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("Auflösung") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = resExpanded) },
-                        modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).fillMaxWidth()
-                    )
-                    ExposedDropdownMenu(
-                        expanded = resExpanded,
-                        onDismissRequest = { resExpanded = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Standard ($defaultLabel)") },
-                            onClick = {
-                                settings.clearCameraResolutionOverride(camera.id)
-                                override = null
-                                resExpanded = false
-                            }
+        ElevatedCard(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.elevatedCardColors(
+                containerColor = if (checked) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f) 
+                                 else MaterialTheme.colorScheme.surface
+            )
+        ) {
+            Column(Modifier.padding(8.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = checked, onCheckedChange = onCheckedChange)
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            text = "Kamera ${camera.id}",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Bold
                         )
-                        camera.sizes.forEach { size ->
+                        Text(
+                            text = facingLabel(camera.facing) + (if (camera.logicalMultiCamera) " (Multi)" else ""),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+                if (checked && camera.sizes.isNotEmpty()) {
+                    ExposedDropdownMenuBox(
+                        expanded = resExpanded,
+                        onExpandedChange = { resExpanded = it },
+                        modifier = Modifier.padding(start = 48.dp, top = 4.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = currentLabel,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Auflösung") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = resExpanded) },
+                            modifier = Modifier.menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable).fillMaxWidth(),
+                            textStyle = MaterialTheme.typography.bodySmall
+                        )
+                        ExposedDropdownMenu(
+                            expanded = resExpanded,
+                            onDismissRequest = { resExpanded = false }
+                        ) {
                             DropdownMenuItem(
-                                text = { Text(size.toString()) },
+                                text = { Text("Standard ($defaultLabel)") },
                                 onClick = {
-                                    settings.setCameraResolutionOverride(camera.id, size.width, size.height)
-                                    override = size.width to size.height
+                                    settings.clearCameraResolutionOverride(camera.id)
+                                    override = null
                                     resExpanded = false
                                 }
                             )
+                            camera.sizes.forEach { size ->
+                                DropdownMenuItem(
+                                    text = { Text(size.toString()) },
+                                    onClick = {
+                                        settings.setCameraResolutionOverride(camera.id, size.width, size.height)
+                                        override = size.width to size.height
+                                        resExpanded = false
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -302,22 +363,12 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun HomeTab(testModeEnabled: Boolean, onTestModeChange: (Boolean) -> Unit) {
         val settings = remember { SettingsManager(this) }
-
         var enabled by remember { mutableStateOf(settings.timelapseEnabled) }
         var interval by remember { mutableStateOf(settings.captureIntervalMinutes.toString()) }
-
         var cameras by remember { mutableStateOf(emptyList<CameraInfo>()) }
         var selectedIds by remember { mutableStateOf(settings.selectedCameraIds) }
-
-        var windowEnabled by remember { mutableStateOf(settings.timeWindowEnabled) }
-        var windowStartHour by remember { mutableIntStateOf(settings.windowStartHour) }
-        var windowStartMinute by remember { mutableIntStateOf(settings.windowStartMinute) }
-        var windowEndHour by remember { mutableIntStateOf(settings.windowEndHour) }
-        var windowEndMinute by remember { mutableIntStateOf(settings.windowEndMinute) }
-
         var uploadStatus by remember { mutableStateOf("") }
         var uploading by remember { mutableStateOf(false) }
-
         var testIntervalSeconds by remember { mutableIntStateOf(10) }
         var testShotsTaken by remember { mutableIntStateOf(0) }
         var testStatus by remember { mutableStateOf("") }
@@ -326,18 +377,11 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(Unit) {
             cameras = withContext(Dispatchers.IO) { CameraRepository(this@MainActivity).list() }
             if (selectedIds.isEmpty() && cameras.isNotEmpty()) {
-                // Nothing persisted yet (fresh install, and the
-                // SettingsManager migration fallback didn't find an old
-                // single-camera setting either) - default to the first
-                // detected camera rather than leaving the selection empty.
                 selectedIds = setOf(cameras.first().id)
                 settings.selectedCameraIds = selectedIds
             }
         }
 
-        // Nimmt Testfotos mit exakt der oben ausgewählten Kamera-Konfiguration
-        // auf und lädt sie sofort hoch - bypasst Intervall und Zeitfenster,
-        // bis zu einem Sicherheitslimit.
         LaunchedEffect(testModeEnabled, testIntervalSeconds) {
             if (testModeEnabled) {
                 testShotsTaken = 0
@@ -363,7 +407,7 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
                             val result = SmbUploader(this@MainActivity).uploadPendingPhotos()
-                            "OK (${resolvedCameras.size} Kamera(s)) – hochgeladen: ${result.uploaded}, fehlgeschlagen: ${result.failed}"
+                            "OK (${resolvedCameras.size} Kamera(s)) – hochgeladen: ${result.uploaded}"
                         } catch (t: Throwable) {
                             "Fehler: ${t.message ?: t.javaClass.simpleName}"
                         }
@@ -372,7 +416,7 @@ class MainActivity : ComponentActivity() {
                     testStatus = "Foto #$testShotsTaken: $outcome"
                 }
                 if (testShotsTaken >= testModeMaxShots) {
-                    testStatus += " — Sicherheitslimit erreicht, Testmodus automatisch beendet."
+                    testStatus += " — Limit erreicht."
                     onTestModeChange(false)
                 }
             }
@@ -380,50 +424,45 @@ class MainActivity : ComponentActivity() {
 
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Timelapse aktiv", style = MaterialTheme.typography.titleMedium)
-                    Spacer(Modifier.weight(1f))
-                    Switch(
-                        checked = enabled,
-                        onCheckedChange = {
-                            enabled = it
-                            settings.timelapseEnabled = it
-                            if (it) {
-                                // Erzwingt eine sofortige erste Aufnahme beim Einschalten,
-                                // statt bis zum Ablauf des vollen Intervalls zu warten -
-                                // relevant wenn zuvor schon mal aufgenommen wurde (sonst
-                                // steht in lastCaptureAt noch ein "echter" Zeitstempel).
-                                settings.lastCaptureAt = 0L
-                            }
-                            AlarmScheduler(this@MainActivity).scheduleAll()
-                            if (it) {
-                                ensureCameraServiceRunning()
-                                lifecycleScope.launch {
-                                    try {
-                                        withContext(Dispatchers.IO) {
-                                            MqttClientManager(this@MainActivity).connectAndDiscover()
-                                        }
-                                    } catch (_: Exception) {
-                                    }
-                                }
-                            } else {
-                                try {
-                                    startService(
-                                        Intent(this@MainActivity, CameraForegroundService::class.java)
-                                            .setAction(CameraForegroundService.ACTION_STOP)
-                                    )
-                                } catch (_: Throwable) {
-                                }
-                            }
-                        }
+                ElevatedCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.elevatedCardColors(
+                        containerColor = if (enabled) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
                     )
+                ) {
+                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(if (enabled) Icons.Default.Timer else Icons.Default.TimerOff, null, modifier = Modifier.size(32.dp))
+                        Spacer(Modifier.width(16.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Timelapse Modus", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                            Text(if (enabled) "Aktiv • Alle $interval Min." else "Deaktiviert", style = MaterialTheme.typography.bodyMedium)
+                        }
+                        Switch(
+                            checked = enabled,
+                            onCheckedChange = {
+                                enabled = it
+                                settings.timelapseEnabled = it
+                                if (it) settings.lastCaptureAt = 0L
+                                AlarmScheduler(this@MainActivity).scheduleAll()
+                                if (it) {
+                                    ensureCameraServiceRunning()
+                                    lifecycleScope.launch {
+                                        try { withContext(Dispatchers.IO) { MqttClientManager(this@MainActivity).connectAndDiscover() } } catch (_: Exception) { }
+                                    }
+                                } else {
+                                    try { startService(Intent(this@MainActivity, CameraForegroundService::class.java).setAction(CameraForegroundService.ACTION_STOP)) } catch (_: Throwable) { }
+                                }
+                            }
+                        )
+                    }
                 }
             }
 
             item {
+                SectionHeader("Zeitsteuerung", Icons.Default.Schedule)
                 OutlinedTextField(
                     value = interval,
                     onValueChange = { value ->
@@ -433,57 +472,27 @@ class MainActivity : ComponentActivity() {
                             AlarmScheduler(this@MainActivity).scheduleAll()
                         }
                     },
-                    label = { Text("Intervall Minuten") },
+                    label = { Text("Intervall (Minuten)") },
+                    leadingIcon = { Icon(Icons.Default.Update, null) },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.fillMaxWidth()
                 )
             }
 
             item {
-                HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                Text("Aufnahme-Kameras", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "Beliebig viele Kameras auswählen - sie nehmen pro Zyklus " +
-                            "nacheinander je ein Foto auf. Optional pro Kamera eine " +
-                            "eigene Auflösung; ohne Auswahl gilt die Standard-" +
-                            "Auflösung aus den Einstellungen.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-
-            if (cameras.size > 1) {
-                item {
+                SectionHeader("Aktive Kameras", Icons.Default.PhotoCamera)
+                if (cameras.size > 1) {
                     Row(
                         Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        TextButton(onClick = {
-                            selectedIds = cameras.map { it.id }.toSet()
-                            settings.selectedCameraIds = selectedIds
-                        }) { Text("Alle") }
-                        TextButton(onClick = {
-                            selectedIds = emptySet()
-                            settings.selectedCameraIds = selectedIds
-                        }) { Text("Keine") }
-                        if (cameras.any { it.facing == CameraCharacteristics.LENS_FACING_FRONT }) {
-                            TextButton(onClick = {
-                                selectedIds = cameras.filter { it.facing == CameraCharacteristics.LENS_FACING_FRONT }
-                                    .map { it.id }.toSet()
-                                settings.selectedCameraIds = selectedIds
-                            }) { Text("Alle Front") }
-                        }
-                        if (cameras.any { it.facing == CameraCharacteristics.LENS_FACING_BACK }) {
-                            TextButton(onClick = {
-                                selectedIds = cameras.filter { it.facing == CameraCharacteristics.LENS_FACING_BACK }
-                                    .map { it.id }.toSet()
-                                settings.selectedCameraIds = selectedIds
-                            }) { Text("Alle Back") }
-                        }
+                        SuggestionChip(onClick = { selectedIds = cameras.map { it.id }.toSet(); settings.selectedCameraIds = selectedIds }, label = { Text("Alle") })
+                        SuggestionChip(onClick = { selectedIds = emptySet(); settings.selectedCameraIds = selectedIds }, label = { Text("Keine") })
                     }
                 }
             }
 
-            items(cameras, key = { "select_${it.id}" }) { camera ->
+            items(cameras, key = { "home_select_${it.id}" }) { camera ->
                 CameraSelectionRow(
                     camera = camera,
                     checked = selectedIds.contains(camera.id),
@@ -495,203 +504,72 @@ class MainActivity : ComponentActivity() {
                 )
             }
 
-            if (cameras.isNotEmpty() && selectedIds.isEmpty()) {
-                item {
-                    Text(
-                        "Keine Kamera ausgewählt - es wird automatisch die erste " +
-                                "verfügbare Kamera verwendet, bis mindestens eine " +
-                                "Kamera ausgewählt ist.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            }
-
             item {
-                HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                Text("Zeitfenster", style = MaterialTheme.typography.titleMedium)
-            }
-
-            item {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Nur in Zeitfenster aufnehmen")
-                    Spacer(Modifier.weight(1f))
-                    Switch(
-                        checked = windowEnabled,
-                        onCheckedChange = {
-                            windowEnabled = it
-                            settings.timeWindowEnabled = it
-                        }
-                    )
-                }
-            }
-
-            if (windowEnabled) {
-                item {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        OutlinedButton(
-                            modifier = Modifier.weight(1f),
-                            onClick = {
-                                TimePickerDialog(
-                                    this@MainActivity,
-                                    { _, h, m ->
-                                        windowStartHour = h
-                                        windowStartMinute = m
-                                        settings.windowStartHour = h
-                                        settings.windowStartMinute = m
-                                    },
-                                    windowStartHour,
-                                    windowStartMinute,
-                                    true
-                                ).show()
-                            }
-                        ) {
-                            Text("Start %02d:%02d".format(windowStartHour, windowStartMinute))
-                        }
-                        OutlinedButton(
-                            modifier = Modifier.weight(1f),
-                            onClick = {
-                                TimePickerDialog(
-                                    this@MainActivity,
-                                    { _, h, m ->
-                                        windowEndHour = h
-                                        windowEndMinute = m
-                                        settings.windowEndHour = h
-                                        settings.windowEndMinute = m
-                                    },
-                                    windowEndHour,
-                                    windowEndMinute,
-                                    true
-                                ).show()
-                            }
-                        ) {
-                            Text("Ende %02d:%02d".format(windowEndHour, windowEndMinute))
-                        }
-                    }
-                }
-                item {
-                    Text(
-                        "Läuft täglich, auch über Mitternacht hinweg (z.B. 18:00–06:00).",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            }
-
-            item {
-                HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                Text("Übertragung", style = MaterialTheme.typography.titleMedium)
-            }
-
-            item {
+                SectionHeader("Manuelle Aktionen", Icons.Default.CloudUpload)
                 Button(
                     enabled = !uploading,
                     onClick = {
                         uploading = true
                         uploadStatus = "Lade hoch …"
                         lifecycleScope.launch {
-                            val result = try {
-                                SmbUploader(this@MainActivity).uploadPendingPhotos()
-                            } catch (_: Throwable) {
-                                null
-                            }
-                            uploadStatus = if (result != null) {
-                                buildString {
-                                    append("Hochgeladen: ${result.uploaded}, fehlgeschlagen: ${result.failed}")
-                                    if (result.removed > 0) append(", entfernt (Datei fehlte): ${result.removed}")
-                                }
-                            } else {
-                                "Upload fehlgeschlagen"
-                            }
-                            // Keep MQTT sensors in sync immediately instead of
-                            // waiting for the next scheduled capture or the daily
-                            // upload sync, since this manual trigger bypasses both.
+                            val result = try { SmbUploader(this@MainActivity).uploadPendingPhotos() } catch (_: Throwable) { null }
+                            uploadStatus = if (result != null) "Erfolgreich: ${result.uploaded}" else "Fehler"
                             withContext(Dispatchers.IO) {
                                 try {
                                     val mqtt = MqttClientManager(this@MainActivity)
                                     if (result != null) {
                                         mqtt.publish("timelapse/${settings.deviceId}/last_upload_count", result.uploaded.toString())
-                                        mqtt.publish("timelapse/${settings.deviceId}/last_upload_failed", result.failed.toString())
-                                        mqtt.publish("timelapse/${settings.deviceId}/last_upload", java.time.Instant.now().toString())
+                                        mqtt.publish("timelapse/${settings.deviceId}/last_upload", Instant.now().toString())
                                     }
                                     MqttDiscovery(mqtt, settings, this@MainActivity).publishState()
                                     mqtt.close()
-                                } catch (_: Throwable) {
-                                }
+                                } catch (_: Throwable) { }
                             }
                             uploading = false
                         }
-                    }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp)
                 ) {
-                    Text(if (uploading) "Lade hoch …" else "Jetzt hochladen")
+                    Icon(Icons.Default.Upload, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Jetzt hochladen")
                 }
-            }
-
-            if (uploadStatus.isNotBlank()) {
-                item { Text(uploadStatus) }
+                if (uploadStatus.isNotBlank()) Text(uploadStatus, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
             }
 
             item {
-                HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                Text("Testmodus", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "Ignoriert Intervall und Zeitfenster: nimmt in kurzem Abstand Testfotos mit " +
-                            "der oben gewählten Kamera-Konfiguration auf und lädt sie sofort per " +
-                            "SMB hoch. Läuft nur im Vordergrund und stoppt automatisch nach " +
-                            "$testModeMaxShots Fotos.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-
-            item {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Testmodus aktiv")
-                    Spacer(Modifier.weight(1f))
-                    Switch(
-                        checked = testModeEnabled,
-                        onCheckedChange = {
-                            onTestModeChange(it)
-                            if (it) testStatus = ""
+                SectionHeader("Testmodus", Icons.Default.BugReport)
+                ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Kurzzeit-Testlauf", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                            Switch(checked = testModeEnabled, onCheckedChange = { onTestModeChange(it); if (it) testStatus = "" })
                         }
-                    )
-                }
-            }
-
-            if (testModeEnabled) {
-                item {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        FilterChip(selected = testIntervalSeconds == 10, onClick = { testIntervalSeconds = 10 }, label = { Text("10 Sek.") })
-                        FilterChip(selected = testIntervalSeconds == 30, onClick = { testIntervalSeconds = 30 }, label = { Text("30 Sek.") })
-                        FilterChip(selected = testIntervalSeconds == 60, onClick = { testIntervalSeconds = 60 }, label = { Text("1 Min.") })
+                        if (testModeEnabled) {
+                            Spacer(Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                FilterChip(selected = testIntervalSeconds == 10, onClick = { testIntervalSeconds = 10 }, label = { Text("10s") })
+                                FilterChip(selected = testIntervalSeconds == 30, onClick = { testIntervalSeconds = 30 }, label = { Text("30s") })
+                            }
+                            Text("Fortschritt: $testShotsTaken / $testModeMaxShots", style = MaterialTheme.typography.bodySmall)
+                            if (testStatus.isNotBlank()) Text(testStatus, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        }
                     }
                 }
-                item { Text("Fotos in diesem Lauf: $testShotsTaken / $testModeMaxShots") }
-            }
-
-            if (testStatus.isNotBlank()) {
-                item { Text(testStatus) }
             }
         }
     }
 
-    /**
-     * Draws a rule-of-thirds grid (two horizontal, two vertical lines) plus
-     * an X made of both corner-to-corner diagonals, as a rough manual aid
-     * for pointing the camera back at roughly the same framing after it's
-     * been moved (e.g. for cleaning/maintenance). Purely visual - not
-     * captured into any photo, and not persisted.
-     */
     @Composable
     private fun AlignmentGridOverlay(modifier: Modifier = Modifier) {
-        val lineColor = Color.White.copy(alpha = 0.65f)
+        val lineColor = Color.White.copy(alpha = 0.5f)
         Canvas(modifier = modifier) {
-            val w = size.width
-            val h = size.height
-            val stroke = 1.dp.toPx()
-            // Rule of thirds
+            val w = size.width; val h = size.height; val stroke = 1.dp.toPx()
             drawLine(lineColor, Offset(w / 3f, 0f), Offset(w / 3f, h), stroke)
             drawLine(lineColor, Offset(2f * w / 3f, 0f), Offset(2f * w / 3f, h), stroke)
             drawLine(lineColor, Offset(0f, h / 3f), Offset(w, h / 3f), stroke)
             drawLine(lineColor, Offset(0f, 2f * h / 3f), Offset(w, 2f * h / 3f), stroke)
-            // X: both corner-to-corner diagonals meeting in the center
             drawLine(lineColor, Offset(0f, 0f), Offset(w, h), stroke)
             drawLine(lineColor, Offset(w, 0f), Offset(0f, h), stroke)
         }
@@ -702,251 +580,330 @@ class MainActivity : ComponentActivity() {
     private fun CameraTab(liveEnabled: Boolean, onLiveEnabledChange: (Boolean) -> Unit) {
         val settings = remember { SettingsManager(this) }
         val previewController = remember { CameraPreviewController(this) }
-
         var cameras by remember { mutableStateOf(emptyList<CameraInfo>()) }
-        var selectedCameraId by remember { mutableStateOf(settings.cameraId) }
+        
+        var selectedCameraId by remember { mutableStateOf(settings.lastPreviewCameraId) }
         var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
         var previewLoading by remember { mutableStateOf(false) }
         var textureSurface by remember { mutableStateOf<Surface?>(null) }
-
-        // Alignment-Hilfen zum Wiederausrichten der Kamera nach dem
-        // Verstellen (z.B. nach Reinigung/Wartung): ein Drittel-Raster mit
-        // X-Diagonalen als grobe Orientierung, und optional das letzte
-        // aufgenommene Foto halbtransparent über die Live-Vorschau gelegt,
-        // um exakt auf den alten Bildausschnitt zurückzufinden.
-        var showGrid by remember { mutableStateOf(true) }
-        var showGhost by remember { mutableStateOf(false) }
-        var ghostOpacity by remember { mutableFloatStateOf(0.35f) }
+        var showGrid by remember { mutableStateOf(settings.showGrid) }
+        var showGhost by remember { mutableStateOf(settings.showGhost) }
+        var ghostOpacity by remember { mutableFloatStateOf(settings.ghostOpacity) }
         var ghostPhotoState by remember { mutableStateOf<GhostPhotoState>(GhostPhotoState.Idle) }
-
-        LaunchedEffect(showGhost) {
-            if (showGhost) {
-                ghostPhotoState = GhostPhotoState.Loading
-                ghostPhotoState = loadGhostPhotoState(this@MainActivity)
-            }
-        }
 
         LaunchedEffect(Unit) {
             cameras = withContext(Dispatchers.IO) { CameraRepository(this@MainActivity).list() }
-            if (selectedCameraId.isBlank()) {
-                selectedCameraId = cameras.firstOrNull()?.id ?: ""
+            val lastUsed = settings.lastPreviewCameraId
+            if (lastUsed.isBlank() || cameras.none { it.id == lastUsed }) {
+                val bestDefault = withContext(Dispatchers.IO) {
+                    cameras.firstOrNull { cam ->
+                        val label = PhotoCaptureHelper.cameraLabel(cam)
+                        AppDatabase.getInstance(this@MainActivity).photoDao().getLastPhotoByCameraLabel(label) != null
+                    }?.id ?: cameras.firstOrNull()?.id ?: ""
+                }
+                selectedCameraId = bestDefault
             }
         }
 
-        val (previewWidth, previewHeight) = if (selectedCameraId.isNotBlank())
+        val selectedCamera = cameras.firstOrNull { it.id == selectedCameraId }
+        val selectedCameraLabel = selectedCamera?.let { PhotoCaptureHelper.cameraLabel(it) }
+
+        val hasGhostPhoto = remember(selectedCameraLabel) { mutableStateOf(false) }
+        LaunchedEffect(selectedCameraLabel) {
+            val exists = if (selectedCameraLabel != null) {
+                withContext(Dispatchers.IO) {
+                    val dbEntry = AppDatabase.getInstance(this@MainActivity).photoDao().getLastPhotoByCameraLabel(selectedCameraLabel)
+                    if (dbEntry != null) {
+                        try {
+                            contentResolver.openInputStream(Uri.parse(dbEntry.localPath))?.use { true } ?: false
+                        } catch (_: Throwable) { false }
+                    } else false
+                }
+            } else false
+            
+            hasGhostPhoto.value = exists
+            if (!exists) showGhost = false
+        }
+
+        LaunchedEffect(showGrid) { settings.showGrid = showGrid }
+        LaunchedEffect(showGhost) { settings.showGhost = showGhost }
+        LaunchedEffect(ghostOpacity) { settings.ghostOpacity = ghostOpacity }
+        LaunchedEffect(selectedCameraId) { settings.lastPreviewCameraId = selectedCameraId }
+
+        LaunchedEffect(showGhost, selectedCameraLabel) {
+            if (showGhost && hasGhostPhoto.value) {
+                ghostPhotoState = GhostPhotoState.Loading
+                ghostPhotoState = loadGhostPhotoState(this@MainActivity, selectedCameraLabel)
+            } else {
+                ghostPhotoState = GhostPhotoState.Idle
+            }
+        }
+
+        val (rawWidth, rawHeight) = if (selectedCameraId.isNotBlank())
             PhotoCaptureHelper.resolveResolution(settings, selectedCameraId)
         else settings.cameraWidth to settings.cameraHeight
 
+        val displayRotation = if (Build.VERSION.SDK_INT >= 30) display?.rotation ?: Surface.ROTATION_0 
+                              else @Suppress("DEPRECATION") windowManager.defaultDisplay.rotation
+        val deviceRotationDegrees = when (displayRotation) {
+            Surface.ROTATION_90 -> 90; Surface.ROTATION_180 -> 180; Surface.ROTATION_270 -> 270; else -> 0
+        }
+        val sensorOrientation = selectedCamera?.orientation ?: 0
+        val isPortrait = (sensorOrientation + deviceRotationDegrees) % 180 != 0
+        val uiAspect = if (isPortrait) rawHeight.toFloat() / rawWidth else rawWidth.toFloat() / rawHeight
+
         LaunchedEffect(selectedCameraId, liveEnabled) {
             if (!liveEnabled && selectedCameraId.isNotBlank()) {
-                previewLoading = true
-                previewBitmap = capturePreview(selectedCameraId)
-                previewLoading = false
+                previewLoading = true; previewBitmap = capturePreview(selectedCameraId); previewLoading = false
             }
         }
 
-        // (Re)starts the live preview whenever the switch, selected camera,
-        // or the TextureView's surface changes; stops it otherwise.
         LaunchedEffect(liveEnabled, selectedCameraId, textureSurface) {
             val surface = textureSurface
-            if (liveEnabled && surface != null && selectedCameraId.isNotBlank()) {
-                previewController.start(selectedCameraId, surface)
-            } else {
-                previewController.stop()
-            }
+            if (liveEnabled && surface != null && selectedCameraId.isNotBlank()) previewController.start(selectedCameraId, surface)
+            else previewController.stop()
         }
 
         DisposableEffect(Unit) {
-            onDispose {
-                // release() (not just stop()) since this composable, and
-                // with it this remembered controller instance, is being
-                // torn down entirely - stop() alone would leave its
-                // background thread running with nothing left to use it.
-                previewController.release()
-                textureSurface?.release()
-                textureSurface = null
-            }
+            onDispose { previewController.release(); textureSurface?.release(); textureSurface = null }
         }
 
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
+        LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             item {
-                Text(
-                    "Zum Ansehen der erkannten Kameras und für eine Live-Vorschau. Welche " +
-                            "Kamera(s) den Timelapse tatsächlich aufnehmen, wird im Start-Tab " +
-                            "unter \"Aufnahme-Kameras\" festgelegt.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-
-            item {
-                val aspect = if (previewHeight > 0) previewWidth.toFloat() / previewHeight else 4f / 3f
-                Card(modifier = Modifier.fillMaxWidth().aspectRatio(aspect)) {
-                    Box(Modifier.fillMaxSize()) {
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            when {
-                                liveEnabled -> AndroidView(
-                                    modifier = Modifier.fillMaxSize(),
-                                    factory = { ctx ->
-                                        TextureView(ctx).apply {
-                                            surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                                                override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
-                                                    val (pw, ph) = previewCaptureSize(previewWidth, previewHeight)
-                                                    st.setDefaultBufferSize(pw, ph)
-                                                    // Release any previously held Surface before replacing
-                                                    // it, so nothing leaks if this fires again without an
-                                                    // intervening onSurfaceTextureDestroyed.
-                                                    textureSurface?.release()
-                                                    textureSurface = Surface(st)
-                                                }
-                                                override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
-                                                override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
-                                                    textureSurface?.release()
-                                                    textureSurface = null
-                                                    return true
-                                                }
-                                                override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
-                                            }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(uiAspect)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.Black)
+                ) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        when {
+                            liveEnabled -> AndroidView(modifier = Modifier.fillMaxSize(), factory = { ctx ->
+                                TextureView(ctx).apply {
+                                    surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                                        override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
+                                            val sizes = selectedCamera?.previewSizes ?: emptyList()
+                                            val targetAspect = rawWidth.toFloat() / rawHeight
+                                            val bestSize = sizes.filter { Math.abs((it.width.toFloat() / it.height) - targetAspect) < 0.01 }.firstOrNull() ?: sizes.firstOrNull()
+                                            val pw = bestSize?.width ?: 1280; val ph = bestSize?.height ?: 960
+                                            st.setDefaultBufferSize(pw, ph)
+                                            textureSurface?.release(); textureSurface = Surface(st)
                                         }
+                                        override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
+                                        override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean { textureSurface?.release(); textureSurface = null; return true }
+                                        override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
                                     }
-                                )
-                                previewLoading -> CircularProgressIndicator()
-                                previewBitmap != null -> Image(
-                                    bitmap = previewBitmap!!.asImageBitmap(),
-                                    contentDescription = "Kameravorschau",
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentScale = ContentScale.Crop
-                                )
-                                else -> Text("Keine Vorschau verfügbar")
-                            }
+                                }
+                            })
+                            previewLoading -> CircularProgressIndicator()
+                            previewBitmap != null -> Image(bitmap = previewBitmap!!.asImageBitmap(), contentDescription = "Preview", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds)
+                            else -> Text("Kamera bereit", color = Color.Gray)
                         }
-                        // Ghost-Overlay unter dem Raster, damit die Rasterlinien
-                        // immer sichtbar bleiben statt vom halbtransparenten Foto
-                        // überdeckt zu werden.
-                        if (showGhost) {
-                            val gs = ghostPhotoState
-                            if (gs is GhostPhotoState.Loaded) {
+                    }
+                    if (showGhost) {
+                        val gs = ghostPhotoState
+                        if (gs is GhostPhotoState.Loaded) {
+                            Box(Modifier.fillMaxSize()) {
                                 Image(
                                     bitmap = gs.bitmap.asImageBitmap(),
-                                    contentDescription = "Letztes Foto (Ausrichtungshilfe)",
-                                    modifier = Modifier.fillMaxSize().alpha(ghostOpacity),
-                                    contentScale = ContentScale.Crop
+                                    contentDescription = "Ghost",
+                                    modifier = Modifier.fillMaxSize().alpha(ghostOpacity).then(if (selectedCamera?.facing == CameraCharacteristics.LENS_FACING_FRONT) Modifier.graphicsLayer(scaleX = -1f) else Modifier),
+                                    contentScale = ContentScale.FillBounds
                                 )
                             }
                         }
-                        if (showGrid) {
-                            AlignmentGridOverlay(modifier = Modifier.fillMaxSize())
+                    }
+                    if (showGrid) AlignmentGridOverlay(modifier = Modifier.fillMaxSize())
+
+                    if (showGhost && ghostPhotoState is GhostPhotoState.Loaded) {
+                        Surface(
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(top = 16.dp)
+                                .alpha(ghostOpacity),
+                            color = Color.Black.copy(alpha = 0.5f),
+                            shape = RoundedCornerShape(4.dp)
+                        ) {
+                            Text(
+                                "Letztes Foto",
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                color = Color.Yellow,
+                                style = MaterialTheme.typography.labelSmall
+                            )
                         }
                     }
-                }
-            }
-
-            item {
-                HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                Text("Ausrichtungshilfen", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "Nützlich, um die Kamera nach dem Verstellen wieder auf denselben " +
-                            "Punkt auszurichten.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-
-            item {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Raster (Drittel + X)")
-                    Spacer(Modifier.weight(1f))
-                    Switch(checked = showGrid, onCheckedChange = { showGrid = it })
-                }
-            }
-
-            item {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Letztes Foto einblenden")
-                    Spacer(Modifier.weight(1f))
-                    Switch(checked = showGhost, onCheckedChange = { showGhost = it })
-                }
-            }
-
-            if (showGhost) {
-                item {
-                    Text("Transparenz: ${(ghostOpacity * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
-                    Slider(
-                        value = ghostOpacity,
-                        onValueChange = { ghostOpacity = it },
-                        valueRange = 0.1f..0.9f
-                    )
-                }
-
-                val statusText = when (ghostPhotoState) {
-                    GhostPhotoState.Idle, GhostPhotoState.Loading -> "Lade letztes Foto …"
-                    GhostPhotoState.NoPhoto -> "Noch kein Foto vorhanden - das Overlay erscheint nach der ersten Aufnahme."
-                    GhostPhotoState.LoadFailed -> "Letztes Foto konnte nicht geladen werden (evtl. gelöscht)."
-                    is GhostPhotoState.Loaded -> null
-                }
-                if (statusText != null) {
-                    item { Text(statusText, style = MaterialTheme.typography.bodySmall) }
-                }
-
-                item {
-                    TextButton(onClick = {
-                        lifecycleScope.launch {
-                            ghostPhotoState = GhostPhotoState.Loading
-                            ghostPhotoState = loadGhostPhotoState(this@MainActivity)
+                    
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(12.dp)
+                            .clip(CircleShape)
+                            .clickable { onLiveEnabledChange(!liveEnabled) },
+                        color = if (liveEnabled) Color.Red.copy(alpha = 0.8f) else Color.Black.copy(alpha = 0.6f),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+                            Box(Modifier.size(8.dp).background(if (liveEnabled) Color.White else Color.Gray, CircleShape))
+                            Spacer(Modifier.width(6.dp))
+                            Text("LIVE", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
                         }
-                    }) {
-                        Text(if (ghostPhotoState is GhostPhotoState.Loaded) "Aktualisieren" else "Erneut versuchen")
                     }
-                }
-            }
 
-            item {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Live-Vorschau")
-                    Spacer(Modifier.weight(1f))
-                    Switch(checked = liveEnabled, onCheckedChange = onLiveEnabledChange)
-                }
-            }
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(12.dp)
+                            .clip(CircleShape)
+                            .clickable(enabled = hasGhostPhoto.value) { showGhost = !showGhost },
+                        color = when {
+                            !hasGhostPhoto.value -> Color.Gray.copy(alpha = 0.2f)
+                            showGhost -> MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
+                            else -> Color.Black.copy(alpha = 0.6f)
+                        },
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+                            Icon(
+                                Icons.Default.Layers, 
+                                null, 
+                                modifier = Modifier.size(14.dp), 
+                                tint = if (hasGhostPhoto.value) Color.White else Color.Gray
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                "GHOST", 
+                                color = if (hasGhostPhoto.value) Color.White else Color.Gray, 
+                                fontWeight = FontWeight.Bold, 
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
 
-            if (!liveEnabled) {
-                item {
-                    Button(
-                        enabled = !previewLoading && selectedCameraId.isNotBlank(),
-                        onClick = {
-                            lifecycleScope.launch {
-                                previewLoading = true
-                                previewBitmap = capturePreview(selectedCameraId)
-                                previewLoading = false
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .background(Color.Black.copy(alpha = 0.5f))
+                            .height(40.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        when {
+                            !hasGhostPhoto.value -> {
+                                Text(
+                                    "Kein Referenzfoto für diese Kamera vorhanden",
+                                    color = Color.Gray,
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                            showGhost && ghostPhotoState is GhostPhotoState.Loaded -> {
+                                Slider(
+                                    value = ghostOpacity,
+                                    onValueChange = { ghostOpacity = it },
+                                    valueRange = 0.05f..0.95f,
+                                    modifier = Modifier.padding(horizontal = 24.dp),
+                                    colors = SliderDefaults.colors(
+                                        thumbColor = Color.White,
+                                        activeTrackColor = Color.White,
+                                        inactiveTrackColor = Color.White.copy(alpha = 0.3f)
+                                    )
+                                )
+                            }
+                            showGhost && ghostPhotoState is GhostPhotoState.Loading -> {
+                                Text("Lade Foto …", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                            }
+                            else -> {
+                                Text(
+                                    "${facingLabel(selectedCamera?.facing ?: -1)} Kamera ${selectedCameraId}",
+                                    color = Color.DarkGray,
+                                    style = MaterialTheme.typography.labelSmall
+                                )
                             }
                         }
-                    ) {
-                        Text(if (previewLoading) "Nehme Vorschau auf …" else "Vorschau aktualisieren")
                     }
                 }
-            } else {
+            }
+
+            if (!liveEnabled && !previewLoading && selectedCameraId.isNotBlank()) {
                 item {
-                    Text(
-                        "Live-Vorschau blockiert geplante Aufnahmen, solange sie läuft – " +
-                                "wird beim Verlassen der App automatisch beendet.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
+                    Button(
+                        onClick = { lifecycleScope.launch { previewLoading = true; previewBitmap = capturePreview(selectedCameraId); previewLoading = false } },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Refresh, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Vorschau aktualisieren")
+                    }
                 }
             }
 
             item {
-                HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                Text("Erkannte Kameras", style = MaterialTheme.typography.titleMedium)
+                SectionHeader("Hilfsmittel", Icons.Default.Handyman)
+                ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Raster einblenden", modifier = Modifier.weight(1f))
+                            Switch(checked = showGrid, onCheckedChange = { showGrid = it })
+                        }
+                        
+                        var scanning by remember { mutableStateOf(false) }
+                        TextButton(
+                            enabled = !scanning,
+                            onClick = { 
+                                scanning = true
+                                lifecycleScope.launch {
+                                    withContext(Dispatchers.IO) { scanForReferencePhotos(this@MainActivity) }
+                                    // Refresh the state
+                                    val exists = selectedCameraLabel?.let { label ->
+                                        AppDatabase.getInstance(this@MainActivity).photoDao().getLastPhotoByCameraLabel(label) != null
+                                    } ?: false
+                                    hasGhostPhoto.value = exists
+                                    scanning = false
+                                }
+                            },
+                            modifier = Modifier.align(Alignment.Start)
+                        ) {
+                            Icon(Icons.Default.Search, null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text(if (scanning) "Suche..." else "Referenzfotos im Speicher suchen")
+                        }
+
+                        if (showGhost) {
+                            HorizontalDivider(modifier = Modifier.alpha(0.3f))
+                            TextButton(
+                                onClick = { lifecycleScope.launch { ghostPhotoState = GhostPhotoState.Loading; ghostPhotoState = loadGhostPhotoState(this@MainActivity, selectedCameraLabel) } },
+                                modifier = Modifier.align(Alignment.End)
+                            ) {
+                                Icon(Icons.Default.Cached, null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Foto neu laden")
+                            }
+                        }
+                    }
+                }
             }
 
-            items(cameras, key = { it.id }) { camera ->
-                val facingText = facingLabel(camera.facing)
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(
-                        selected = selectedCameraId == camera.id,
-                        onClick = { selectedCameraId = camera.id }
+            item { SectionHeader("Kamera wählen", Icons.Default.Cameraswitch) }
+
+            items(cameras, key = { "tab_select_${it.id}" }) { camera ->
+                ElevatedCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { 
+                        selectedCameraId = camera.id
+                        settings.lastPreviewCameraId = camera.id
+                    },
+                    colors = CardDefaults.elevatedCardColors(
+                        containerColor = if (selectedCameraId == camera.id) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface
                     )
-                    Text("${camera.id} ($facingText${if (camera.logicalMultiCamera) ", logical" else ""})")
+                ) {
+                    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = selectedCameraId == camera.id, onClick = { 
+                            selectedCameraId = camera.id
+                            settings.lastPreviewCameraId = camera.id
+                        })
+                        Column {
+                            Text("Kamera ${camera.id}", fontWeight = FontWeight.Bold)
+                            Text(facingLabel(camera.facing), style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                 }
             }
         }
@@ -957,484 +914,201 @@ class MainActivity : ComponentActivity() {
     private fun SettingsTab() {
         val settings = remember { SettingsManager(this) }
         val secrets = remember { SecureSecrets(this) }
-
-        var deviceName by remember { mutableStateOf(settings.deviceName) }
-        var jpegQuality by remember { mutableStateOf(settings.jpegQuality.toString()) }
         var cameras by remember { mutableStateOf(emptyList<CameraInfo>()) }
-
-        LaunchedEffect(Unit) {
-            cameras = withContext(Dispatchers.IO) { CameraRepository(this@MainActivity).list() }
-        }
-
-        var smbEnabled by remember { mutableStateOf(settings.smbUploadEnabled) }
-        var smbHost by remember { mutableStateOf(settings.smbHost) }
-        var smbShare by remember { mutableStateOf(settings.smbShare) }
-        var smbRemoteDirectory by remember { mutableStateOf(settings.smbRemoteDirectory) }
-        var smbUsername by remember { mutableStateOf(secrets.smbUsername) }
-        var smbPassword by remember { mutableStateOf(secrets.smbPassword) }
-        var smbDomain by remember { mutableStateOf(settings.smbDomain) }
-        var smbTestStatus by remember { mutableStateOf("") }
         var smbTesting by remember { mutableStateOf(false) }
-        var smbUploadHour by remember { mutableIntStateOf(settings.smbUploadHour) }
-        var smbUploadMinute by remember { mutableIntStateOf(settings.smbUploadMinute) }
-        var deleteAfterUpload by remember { mutableStateOf(settings.deleteAfterUpload) }
-
-        var mqttHost by remember { mutableStateOf(settings.mqttHost) }
-        var mqttUsername by remember { mutableStateOf(secrets.mqttUsername) }
-        var mqttPassword by remember { mutableStateOf(secrets.mqttPassword) }
+        var smbTestStatus by remember { mutableStateOf("") }
         var discoveryStatus by remember { mutableStateOf("") }
         var discoveryTesting by remember { mutableStateOf(false) }
 
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
+        // Proper Compose state to ensure UI updates immediately
+        var smbUploadEnabled by remember { mutableStateOf(settings.smbUploadEnabled) }
+        var deleteAfterUpload by remember { mutableStateOf(settings.deleteAfterUpload) }
+        var smbUploadHour by remember { mutableIntStateOf(settings.smbUploadHour) }
+        var smbUploadMinute by remember { mutableIntStateOf(settings.smbUploadMinute) }
+
+        LaunchedEffect(Unit) { cameras = withContext(Dispatchers.IO) { CameraRepository(this@MainActivity).list() } }
+
+        LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             item {
+                SectionHeader("Allgemein", Icons.Default.Info)
                 OutlinedTextField(
-                    value = deviceName,
-                    onValueChange = {
-                        deviceName = it
-                        settings.deviceName = it
-                    },
+                    value = settings.deviceName,
+                    onValueChange = { settings.deviceName = it },
                     label = { Text("Gerätename") },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    leadingIcon = { Icon(Icons.Default.Label, null) }
                 )
+                Text("ID: ${settings.deviceId}", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
             }
 
-            item { Text("Geräte-ID: ${settings.deviceId}") }
-
             item {
-                Text("Kamera", style = MaterialTheme.typography.titleMedium)
-            }
-
-            item { Text("Speicherort: Pictures/Timelapse/<Datum>/") }
-
-            item {
+                SectionHeader("Standard-Auflösung", Icons.Default.AspectRatio)
                 val selectedCamera = cameras.firstOrNull { it.id == settings.cameraId } ?: cameras.firstOrNull()
                 var resolutionExpanded by remember { mutableStateOf(false) }
-                var selectedSize by remember(selectedCamera) {
-                    mutableStateOf(
-                        selectedCamera?.sizes?.firstOrNull { it.width == settings.cameraWidth && it.height == settings.cameraHeight }
-                            ?: selectedCamera?.sizes?.firstOrNull()
+                val currentSize = selectedCamera?.sizes?.firstOrNull { it.width == settings.cameraWidth && it.height == settings.cameraHeight } ?: selectedCamera?.sizes?.firstOrNull()
+                
+                ExposedDropdownMenuBox(expanded = resolutionExpanded, onExpandedChange = { resolutionExpanded = it }) {
+                    OutlinedTextField(
+                        value = currentSize?.toString() ?: "Lade...",
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Bildgröße") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = resolutionExpanded) },
+                        modifier = Modifier.menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable).fillMaxWidth()
                     )
-                }
-                LaunchedEffect(selectedCamera) {
-                    if (selectedCamera != null) settings.cameraId = selectedCamera.id
-                    if (selectedCamera != null &&
-                        selectedCamera.sizes.none { it.width == settings.cameraWidth && it.height == settings.cameraHeight }
-                    ) {
-                        selectedCamera.sizes.firstOrNull()?.let {
-                            settings.cameraWidth = it.width
-                            settings.cameraHeight = it.height
+                    ExposedDropdownMenu(expanded = resolutionExpanded, onDismissRequest = { resolutionExpanded = false }) {
+                        (selectedCamera?.sizes ?: emptyList()).forEach { size ->
+                            DropdownMenuItem(text = { Text(size.toString()) }, onClick = { 
+                                settings.cameraWidth = size.width; settings.cameraHeight = size.height
+                                resolutionExpanded = false 
+                            })
                         }
                     }
                 }
-                Column {
-                    Text(
-                        "Standard-Auflösung für Kameras ohne eigene Auswahl (siehe Start-Tab).",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    ExposedDropdownMenuBox(
-                        expanded = resolutionExpanded,
-                        onExpandedChange = { resolutionExpanded = it }
-                    ) {
-                        OutlinedTextField(
-                            value = selectedSize?.toString() ?: "Keine Auflösung erkannt",
-                            onValueChange = {},
-                            readOnly = true,
-                            label = { Text("Standard-Auflösung") },
-                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = resolutionExpanded) },
-                            modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).fillMaxWidth()
-                        )
-                        ExposedDropdownMenu(
-                            expanded = resolutionExpanded,
-                            onDismissRequest = { resolutionExpanded = false }
-                        ) {
-                            (selectedCamera?.sizes ?: emptyList()).forEach { size ->
-                                DropdownMenuItem(
-                                    text = { Text(size.toString()) },
-                                    onClick = {
-                                        selectedSize = size
-                                        settings.cameraWidth = size.width
-                                        settings.cameraHeight = size.height
-                                        resolutionExpanded = false
-                                    }
-                                )
-                            }
-                        }
-                    }
-                    if (selectedCamera == null) {
-                        Text(
-                            "Kamera wird geladen – bitte kurz warten.",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                }
             }
 
             item {
-                OutlinedTextField(
-                    value = jpegQuality,
-                    onValueChange = { value ->
-                        jpegQuality = value.filter(Char::isDigit)
-                        value.toIntOrNull()?.let { settings.jpegQuality = it }
-                    },
-                    label = { Text("JPEG Qualität (1-100)") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-
-
-            item {
-                HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                Text("SMB", style = MaterialTheme.typography.titleMedium)
-            }
-
-            item {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Automatischer Upload")
-                    Spacer(Modifier.weight(1f))
-                    Switch(
-                        checked = smbEnabled,
-                        onCheckedChange = {
-                            smbEnabled = it
-                            settings.smbUploadEnabled = it
-                            AlarmScheduler(this@MainActivity).scheduleAll()
-                        }
-                    )
-                }
-            }
-
-            item {
-                OutlinedTextField(
-                    value = smbHost,
-                    onValueChange = {
-                        smbHost = it
-                        settings.smbHost = it
-                    },
-                    label = { Text("SMB Server") },
-                    placeholder = { Text("z.B. 192.168.1.10") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-
-            item {
-                OutlinedTextField(
-                    value = smbShare,
-                    onValueChange = {
-                        smbShare = it
-                        settings.smbShare = it
-                    },
-                    label = { Text("SMB Share") },
-                    placeholder = { Text("z.B. timelapse") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-
-            item {
-                OutlinedTextField(
-                    value = smbRemoteDirectory,
-                    onValueChange = {
-                        smbRemoteDirectory = it
-                        settings.smbRemoteDirectory = it
-                    },
-                    label = { Text("SMB Zielverzeichnis") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-
-            item {
-                OutlinedTextField(
-                    value = smbUsername,
-                    onValueChange = {
-                        smbUsername = it
-                        secrets.smbUsername = it
-                    },
-                    label = { Text("SMB Benutzername") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-
-            item {
-                OutlinedTextField(
-                    value = smbPassword,
-                    onValueChange = {
-                        smbPassword = it
-                        secrets.smbPassword = it
-                    },
-                    label = { Text("SMB Passwort") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-
-            item {
-                OutlinedTextField(
-                    value = smbDomain,
-                    onValueChange = {
-                        smbDomain = it
-                        settings.smbDomain = it
-                    },
-                    label = { Text("SMB Domain (optional)") },
-                    placeholder = { Text("z.B. WORKGROUP") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-
-            item {
-                Button(
-                    enabled = !smbTesting,
-                    onClick = {
-                        smbTesting = true
-                        smbTestStatus = "Teste Verbindung …"
-                        lifecycleScope.launch {
-                            val result = SmbUploader(this@MainActivity).testConnection()
-                            smbTestStatus = result.fold(
-                                onSuccess = { it },
-                                onFailure = { "Fehler: ${it.message ?: it.javaClass.simpleName}" }
-                            )
-                            smbTesting = false
-                        }
-                    }
-                ) {
-                    Text(if (smbTesting) "Teste …" else "SMB-Verbindung testen")
-                }
-            }
-
-            if (smbTestStatus.isNotBlank()) {
-                item { Text(smbTestStatus) }
-            }
-
-            // Der Intervall-Upload wurde wieder entfernt (unzuverlässig, nur
-            // erhöhter Akkuverbrauch). Upload läuft ausschließlich täglich
-            // zu einer festen Uhrzeit.
-            item {
-                Button(
-                    onClick = {
-                        TimePickerDialog(
-                            this@MainActivity,
-                            { _, h, m ->
-                                smbUploadHour = h
-                                smbUploadMinute = m
-                                settings.smbUploadHour = h
-                                settings.smbUploadMinute = m
-                                AlarmScheduler(this@MainActivity).scheduleUpload()
-                            },
-                            smbUploadHour,
-                            smbUploadMinute,
-                            true
-                        ).show()
-                    }
-                ) {
-                    Text("Uploadzeit %02d:%02d".format(smbUploadHour, smbUploadMinute))
-                }
-            }
-
-            item {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Nach erfolgreichem Upload löschen")
-                        Text(
-                            "Andernfalls bleiben Fotos dauerhaft auf dem Gerät, auch nach Upload.",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                    Switch(
-                        checked = deleteAfterUpload,
-                        onCheckedChange = {
-                            deleteAfterUpload = it
-                            settings.deleteAfterUpload = it
-                        }
-                    )
-                }
-            }
-
-            item {
-                HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                Text("MQTT", style = MaterialTheme.typography.titleMedium)
-            }
-
-            item {
-                OutlinedTextField(
-                    value = mqttHost,
-                    onValueChange = {
-                        mqttHost = it
-                        settings.mqttHost = it
-                    },
-                    label = { Text("MQTT Server") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-
-            item {
-                OutlinedTextField(
-                    value = mqttUsername,
-                    onValueChange = {
-                        mqttUsername = it
-                        secrets.mqttUsername = it
-                    },
-                    label = { Text("MQTT Benutzername") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-
-            item {
-                OutlinedTextField(
-                    value = mqttPassword,
-                    onValueChange = {
-                        mqttPassword = it
-                        secrets.mqttPassword = it
-                    },
-                    label = { Text("MQTT Passwort") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-
-            item {
-                Button(
-                    enabled = !discoveryTesting,
-                    onClick = {
-                        discoveryTesting = true
-                        discoveryStatus = "Verbinde …"
-                        lifecycleScope.launch {
-                            try {
-                                withContext(Dispatchers.IO) {
-                                    MqttClientManager(this@MainActivity).connectAndDiscover()
+                SectionHeader("SMB Cloud", Icons.Default.Cloud)
+                ElevatedCard {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Autoupload", modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                            Switch(
+                                checked = smbUploadEnabled, 
+                                onCheckedChange = { 
+                                    smbUploadEnabled = it
+                                    settings.smbUploadEnabled = it
+                                    AlarmScheduler(this@MainActivity).scheduleAll() 
                                 }
-                                discoveryStatus = "Discovery erfolgreich gesendet"
-                            } catch (e: Exception) {
-                                discoveryStatus = "MQTT-Fehler: ${e.message ?: e.javaClass.simpleName}"
-                            }
-                            discoveryTesting = false
-                        }
-                    }
-                ) {
-                    Text(if (discoveryTesting) "Teste …" else "MQTT Discovery senden")
-                }
-            }
-
-            if (discoveryStatus.isNotBlank()) {
-                item { Text(discoveryStatus) }
-            }
-
-            item {
-                HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                Text("Zuverlässigkeit", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "Damit geplante Aufnahmen/Uploads nicht vom System verzögert " +
-                            "oder unterdrückt werden, sollte die App von der Akku-" +
-                            "Optimierung ausgenommen werden (besonders wichtig bei " +
-                            "Samsung/Xiaomi/Huawei & Co).",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-
-            item {
-                val powerManager = remember { getSystemService(android.os.PowerManager::class.java) }
-                val ignoringOptimizations = remember {
-                    mutableStateOf(powerManager.isIgnoringBatteryOptimizations(packageName))
-                }
-                val lifecycleOwner = LocalLifecycleOwner.current
-                DisposableEffect(lifecycleOwner) {
-                    val observer = LifecycleEventObserver { _, event ->
-                        if (event == Lifecycle.Event.ON_RESUME) {
-                            ignoringOptimizations.value = powerManager.isIgnoringBatteryOptimizations(packageName)
-                        }
-                    }
-                    lifecycleOwner.lifecycle.addObserver(observer)
-                    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-                }
-                Button(
-                    enabled = !ignoringOptimizations.value,
-                    onClick = { requestIgnoreBatteryOptimizations() }
-                ) {
-                    Text(
-                        if (ignoringOptimizations.value) "Akku-Optimierung bereits deaktiviert"
-                        else "Akku-Optimierung deaktivieren"
-                    )
-                }
-            }
-
-            // SCHEDULE_EXACT_ALARM permission management only exists from API 31
-            // onward; below that, the manifest-declared permission is always
-            // granted and there is nothing for the user to enable here.
-            if (Build.VERSION.SDK_INT >= 31) {
-                item {
-                    val alarmManager = remember { getSystemService(android.app.AlarmManager::class.java) }
-                    val canScheduleExact = remember { mutableStateOf(alarmManager.canScheduleExactAlarms()) }
-                    val lifecycleOwner3 = LocalLifecycleOwner.current
-                    DisposableEffect(lifecycleOwner3) {
-                        val observer = LifecycleEventObserver { _, event ->
-                            if (event == Lifecycle.Event.ON_RESUME) {
-                                canScheduleExact.value = alarmManager.canScheduleExactAlarms()
-                            }
-                        }
-                        lifecycleOwner3.lifecycle.addObserver(observer)
-                        onDispose { lifecycleOwner3.lifecycle.removeObserver(observer) }
-                    }
-                    Button(
-                        enabled = !canScheduleExact.value,
-                        onClick = {
-                            startActivity(
-                                Intent(
-                                    Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
-                                    "package:$packageName".toUri()
-                                )
                             )
                         }
-                    ) {
+
+                        Button(
+                            onClick = { 
+                                TimePickerDialog(this@MainActivity, { _, h, m ->
+                                    smbUploadHour = h; smbUploadMinute = m
+                                    settings.smbUploadHour = h; settings.smbUploadMinute = m
+                                    AlarmScheduler(this@MainActivity).scheduleUpload()
+                                }, smbUploadHour, smbUploadMinute, true).show()
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.Schedule, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Upload täglich um %02d:%02d".format(smbUploadHour, smbUploadMinute))
+                        }
+
+                        OutlinedTextField(value = settings.smbHost, onValueChange = { settings.smbHost = it }, label = { Text("Server") }, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = settings.smbShare, onValueChange = { settings.smbShare = it }, label = { Text("Share") }, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = secrets.smbUsername, onValueChange = { secrets.smbUsername = it }, label = { Text("User") }, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = secrets.smbPassword, onValueChange = { secrets.smbPassword = it }, label = { Text("Passwort") }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Bilder nach Upload löschen", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                            Switch(
+                                checked = deleteAfterUpload, 
+                                onCheckedChange = { 
+                                    deleteAfterUpload = it
+                                    settings.deleteAfterUpload = it 
+                                }
+                            )
+                        }
                         Text(
-                            if (canScheduleExact.value) "Alarm-Berechtigung bereits erteilt"
-                            else "Alarm-Berechtigung öffnen"
+                            "Das aktuellste Referenzfoto pro Kamera bleibt als 'Ghost' erhalten.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                         )
+
+                        Button(
+                            enabled = !smbTesting,
+                            onClick = { 
+                                smbTesting = true; smbTestStatus = "Teste..."
+                                lifecycleScope.launch { 
+                                    val r = SmbUploader(this@MainActivity).testConnection()
+                                    smbTestStatus = r.fold(onSuccess = { "OK: $it" }, onFailure = { "Fehler" })
+                                    smbTesting = false 
+                                } 
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("SMB Testen") }
+                        if (smbTestStatus.isNotBlank()) Text(smbTestStatus, style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
 
             item {
-                var lastCapture by remember { mutableLongStateOf(settings.lastCaptureAt) }
-                val lifecycleOwner2 = LocalLifecycleOwner.current
-                DisposableEffect(lifecycleOwner2) {
-                    val observer = LifecycleEventObserver { _, event ->
-                        if (event == Lifecycle.Event.ON_RESUME) lastCapture = settings.lastCaptureAt
+                SectionHeader("MQTT / HA", Icons.Default.Wifi)
+                ElevatedCard {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedTextField(value = settings.mqttHost, onValueChange = { settings.mqttHost = it }, label = { Text("Server") }, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = secrets.mqttUsername, onValueChange = { secrets.mqttUsername = it }, label = { Text("Benutzername") }, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = secrets.mqttPassword, onValueChange = { secrets.mqttPassword = it }, label = { Text("Passwort") }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
+
+                        Button(
+                            enabled = !discoveryTesting,
+                            onClick = { 
+                                discoveryTesting = true; discoveryStatus = "Sende..."
+                                lifecycleScope.launch { 
+                                    try { withContext(Dispatchers.IO) { MqttClientManager(this@MainActivity).connectAndDiscover() }; discoveryStatus = "OK" } 
+                                    catch (e: Exception) { discoveryStatus = "Fehler" }
+                                    discoveryTesting = false 
+                                } 
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Discovery Senden") }
+                        if (discoveryStatus.isNotBlank()) Text(discoveryStatus, style = MaterialTheme.typography.bodySmall)
                     }
-                    lifecycleOwner2.lifecycle.addObserver(observer)
-                    onDispose { lifecycleOwner2.lifecycle.removeObserver(observer) }
                 }
-                Text(
-                    if (lastCapture > 0)
-                        "Letzte Aufnahme: ${java.text.SimpleDateFormat("dd.MM. HH:mm:ss", java.util.Locale.GERMANY).format(java.util.Date(lastCapture))} " +
-                                "(vor ${(System.currentTimeMillis() - lastCapture) / 60000} Min.)"
-                    else "Noch keine Aufnahme ausgeführt",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Text(
-                    "Aktualisiert sich mit jeder geplanten Aufnahme, solange die App läuft " +
-                            "(App erneut öffnen, um den Wert hier zu aktualisieren). Bleibt er " +
-                            "über Stunden stehen, prüfe die Akku-Optimierung und die Alarm-" +
-                            "Berechtigung oben.",
-                    style = MaterialTheme.typography.bodySmall
-                )
+            }
+
+            item {
+                SectionHeader("System", Icons.Default.Build)
+                val powerManager = remember { getSystemService(PowerManager::class.java) }
+                val ignoringOpt = remember { mutableStateOf(powerManager.isIgnoringBatteryOptimizations(packageName)) }
+                
+                Button(
+                    onClick = { requestIgnoreBatteryOptimizations() },
+                    colors = ButtonDefaults.buttonColors(containerColor = if (ignoringOpt.value) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.error),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (ignoringOpt.value) "Akku-Optimierung: AUS" else "Optimierung deaktivieren!", color = if (ignoringOpt.value) MaterialTheme.colorScheme.onSurfaceVariant else Color.White)
+                }
             }
         }
     }
 
-    // This app is an unattended background capture/upload tool, which is one of
-    // the accepted use cases for asking the user to exempt it from battery
-    // optimizations (Play policy requires this to be a deliberate,
-    // user-initiated action rather than something the app does silently -
-    // which is exactly what the "Akku-Optimierung deaktivieren" button above is).
+    /**
+     * Scans the storage for existing timelapse photos and adds them to the 
+     * database if they aren't already registered. This allows the ghost feature 
+     * to recognize manually copied files.
+     */
+    private suspend fun scanForReferencePhotos(context: Context) {
+        val root = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "Timelapse")
+        if (!root.exists() || !root.isDirectory) return
+        
+        val dao = AppDatabase.getInstance(context).photoDao()
+        
+        root.listFiles()?.filter { it.isDirectory }?.forEach { dateFolder ->
+            dateFolder.listFiles()?.filter { it.extension.lowercase() == "jpg" }?.forEach { photoFile ->
+                val label = photoFile.name.substringBefore('_')
+                // Check if already in DB
+                val existing = dao.getLastPhotoByCameraLabel(label)
+                if (existing == null || !existing.fileName.equals(photoFile.name)) {
+                    // It's a new or different file, register it
+                    val entity = PhotoEntity(
+                        localPath = Uri.fromFile(photoFile).toString(),
+                        fileName = photoFile.name,
+                        capturedAt = photoFile.lastModified(),
+                        uploadedAt = System.currentTimeMillis() // Assume uploaded if copied back
+                    )
+                    dao.insert(entity)
+                }
+            }
+        }
+    }
+
     @SuppressLint("BatteryLife")
     private fun requestIgnoreBatteryOptimizations() {
-        startActivity(
-            Intent(
-                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                "package:$packageName".toUri()
-            )
-        )
+        startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, "package:$packageName".toUri()))
     }
 }

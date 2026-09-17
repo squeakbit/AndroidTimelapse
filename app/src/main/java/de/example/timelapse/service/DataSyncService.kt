@@ -1,5 +1,7 @@
 package de.example.timelapse.service
-import android.app.*;import android.content.*;import android.content.pm.ServiceInfo;import android.os.*;import de.example.timelapse.*;import de.example.timelapse.data.*;import de.example.timelapse.mqtt.*;import de.example.timelapse.smb.*;import kotlinx.coroutines.*
+import android.app.*;import android.content.*;import android.content.pm.ServiceInfo;import android.os.*;import de.example.timelapse.*;import de.example.timelapse.data.*;import de.example.timelapse.mqtt.*;import de.example.timelapse.smb.*
+import de.example.timelapse.camera.StorageCleanupHelper
+import kotlinx.coroutines.*
 class DataSyncService:Service(){
  companion object{const val ACTION_UPLOAD="de.example.timelapse.UPLOAD"}
  private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
@@ -23,6 +25,9 @@ class DataSyncService:Service(){
    // stays in sync at least once a day even if no photo was captured
    // in between (e.g. timelapse disabled, only manual SMB upload used).
    mqtt.connectAndDiscover()
+   
+   // Cleanup old empty folders
+   StorageCleanupHelper.cleanOldEmptyFolders(this)
   }catch(t:Throwable){android.util.Log.w("Timelapse","sync failed",t)}finally{mqtt.close()}
  }
  override fun onDestroy(){scope.cancel();super.onDestroy()};override fun onBind(i:Intent?)=null

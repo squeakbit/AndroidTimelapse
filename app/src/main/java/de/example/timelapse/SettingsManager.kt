@@ -35,6 +35,18 @@ class SettingsManager(context: Context) {
     var cameraId: String
         get() = p.getString("camera_id", "") ?: ""
         set(v) = p.edit().putString("camera_id", v).apply()
+    var lastPreviewCameraId: String
+        get() = p.getString("last_preview_camera_id", "") ?: ""
+        set(v) = p.edit().putString("last_preview_camera_id", v).apply()
+    var showGrid: Boolean
+        get() = p.getBoolean("show_grid", true)
+        set(v) = p.edit().putBoolean("show_grid", v).apply()
+    var showGhost: Boolean
+        get() = p.getBoolean("show_ghost", false)
+        set(v) = p.edit().putBoolean("show_ghost", v).apply()
+    var ghostOpacity: Float
+        get() = p.getFloat("ghost_opacity", 0.4f)
+        set(v) = p.edit().putFloat("ghost_opacity", v).apply()
     /**
      * Freely chosen set of camera IDs to capture with on every scheduled
      * cycle (in no particular guaranteed order - see

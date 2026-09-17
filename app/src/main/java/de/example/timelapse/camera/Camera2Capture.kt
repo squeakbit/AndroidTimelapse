@@ -4,9 +4,12 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.ImageFormat
 import android.hardware.camera2.*
+import android.hardware.display.DisplayManager
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
+import android.view.Display
+import android.view.Surface
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.CountDownLatch
@@ -26,6 +29,41 @@ class Camera2Capture(private val context: Context) {
     private val thread = HandlerThread("Camera2Capture").apply { start() }
     private val handler = Handler(thread.looper)
 
+    /**
+     * Computes the JPEG_ORIENTATION value (clockwise degrees) needed so the
+     * resulting photo displays upright, combining this camera's fixed
+     * sensor mounting angle with the device's current display rotation.
+     * Without this, JPEGs come out however the sensor happens to be
+     * mounted relative to the device - on most phones/tablets that's 90°
+     * off from how the device is actually held, which is exactly the
+     * "photo is rotated" symptom this fixes. Uses the same lookup table as
+     * Android's own Camera2Basic sample. Never throws - falls back to
+     * ROTATION_0 if the display can't be queried for any reason (e.g. an
+     * unusual context), which just means the sensor's native orientation
+     * is used as-is rather than crashing the capture over it.
+     */
+    private fun computeJpegOrientation(characteristics: CameraCharacteristics): Int {
+        val sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
+        val displayRotation = try {
+            context.getSystemService(DisplayManager::class.java)
+                ?.getDisplay(Display.DEFAULT_DISPLAY)?.rotation ?: Surface.ROTATION_0
+        } catch (_: Throwable) {
+            Surface.ROTATION_0
+        }
+        val deviceRotationDegrees = when (displayRotation) {
+            Surface.ROTATION_90 -> 90
+            Surface.ROTATION_180 -> 180
+            Surface.ROTATION_270 -> 270
+            else -> 0
+        }
+        val facing = characteristics.get(CameraCharacteristics.LENS_FACING)
+        return if (facing == CameraCharacteristics.LENS_FACING_FRONT) {
+            (sensorOrientation - deviceRotationDegrees + 360) % 360
+        } else {
+            (sensorOrientation + deviceRotationDegrees) % 360
+        }
+    }
+
     @SuppressLint("MissingPermission")
     fun capture(cameraId: String, width: Int, height: Int, jpegQuality: Int, outFile: File): Boolean {
         val manager = context.getSystemService(CameraManager::class.java)
@@ -33,6 +71,7 @@ class Camera2Capture(private val context: Context) {
         val afModes = chars.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: intArrayOf()
         val supportsAf = afModes.contains(CameraCharacteristics.CONTROL_AF_MODE_AUTO) ||
                 afModes.contains(CameraCharacteristics.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+        val jpegOrientation = computeJpegOrientation(chars)
 
         val latch = CountDownLatch(1)
         var ok = false
@@ -73,6 +112,7 @@ class Camera2Capture(private val context: Context) {
                 val req = d.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
                     addTarget(reader.surface)
                     set(CaptureRequest.JPEG_QUALITY, jpegQuality.toByte())
+                    set(CaptureRequest.JPEG_ORIENTATION, jpegOrientation)
                     if (supportsAf) {
                         set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
                         set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)

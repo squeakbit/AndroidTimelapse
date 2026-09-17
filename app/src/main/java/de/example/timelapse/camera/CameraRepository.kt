@@ -4,6 +4,7 @@ import android.content.Context
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.graphics.ImageFormat
+import android.graphics.SurfaceTexture
 
 class CameraRepository(private val context: Context) {
     private val manager = context.getSystemService(CameraManager::class.java)
@@ -15,6 +16,7 @@ class CameraRepository(private val context: Context) {
                 ?: return@mapNotNull null
             val facing = c.get(CameraCharacteristics.LENS_FACING)
                 ?: CameraCharacteristics.LENS_FACING_EXTERNAL
+            val orientation = c.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
             val caps = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
             val logical = caps.contains(
                 CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA
@@ -23,6 +25,10 @@ class CameraRepository(private val context: Context) {
                 ?.map { SizeOption(it.width, it.height) }
                 ?.sortedWith(compareByDescending<SizeOption> { it.width.toLong() * it.height }.thenByDescending { it.width })
                 ?: emptyList()
-            CameraInfo(id, facing, logical, sizes)
+            val previewSizes = map.getOutputSizes(SurfaceTexture::class.java)
+                ?.map { SizeOption(it.width, it.height) }
+                ?.sortedWith(compareByDescending<SizeOption> { it.width.toLong() * it.height }.thenByDescending { it.width })
+                ?: emptyList()
+            CameraInfo(id, facing, orientation, logical, sizes, previewSizes)
         }
 }

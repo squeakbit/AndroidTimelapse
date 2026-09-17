@@ -11,13 +11,14 @@ import com.hierynomus.smbj.share.DiskShare
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import android.net.Uri
+import android.util.Log
 import java.text.SimpleDateFormat
 import java.util.*
 data class UploadResult(val uploaded:Int,val failed:Int,val removed:Int=0)
 class SmbUploader(private val context:Context){
  suspend fun uploadPendingPhotos():UploadResult=withContext(Dispatchers.IO){
   val s=SettingsManager(context); val dao=AppDatabase.getInstance(context).photoDao(); val pending=dao.getPendingPhotos()
-  android.util.Log.i("Timelapse","upload run: ${pending.size} pending file(s) found")
+  Log.i("Timelapse","upload run: ${pending.size} pending file(s) found")
   if(pending.isEmpty())return@withContext UploadResult(0,0,0)
   var u=0;var f=0;var r=0; val client=SMBClient()
   try{
@@ -34,8 +35,37 @@ class SmbUploader(private val context:Context){
     }
    }
   }catch(_:Throwable){f+=pending.size-u-r}finally{client.close()}
+  
+  if (s.deleteAfterUpload) cleanupLocalFiles(dao)
+  
   UploadResult(u,f,r)
  }
+
+ private suspend fun cleanupLocalFiles(dao: PhotoDao) {
+  try {
+   val uploaded = dao.getAllUploadedPhotos()
+   if (uploaded.isEmpty()) return
+   
+   // Group by camera label (e.g., "B0", "F1")
+   val groups = uploaded.groupBy { it.fileName.substringBefore('_') }
+   
+   for ((_, photos) in groups) {
+    // Sort by capture time descending
+    val sorted = photos.sortedByDescending { it.capturedAt }
+    
+    // Delete local files for all EXCEPT the latest one
+    for (i in 1 until sorted.size) {
+     val p = sorted[i]
+     try {
+      context.contentResolver.delete(Uri.parse(p.localPath), null, null)
+     } catch (_: Throwable) {}
+    }
+   }
+  } catch (t: Throwable) {
+   Log.w("Timelapse", "Cleanup of local files failed: ${t.message}")
+  }
+ }
+
  private enum class UploadOutcome{SUCCESS,FAILED,REMOVED}
  private suspend fun uploadOne(share:DiskShare,p:PhotoEntity,dao:PhotoDao,s:SettingsManager):UploadOutcome{
   val uri=Uri.parse(p.localPath)
@@ -54,7 +84,16 @@ class SmbUploader(private val context:Context){
     }
    }
    dao.update(p.copy(uploadedAt=System.currentTimeMillis(),uploadAttempts=p.uploadAttempts+1,lastUploadError=null,remotePath=remote))
-   if(s.deleteAfterUpload) context.contentResolver.delete(uri,null,null)
+   
+   if(s.deleteAfterUpload) {
+    // PROTECT GHOST IMAGE: We only delete the file if it is NOT the 
+    // single most recent photo taken by this specific camera.
+    val label = p.fileName.substringBefore('_')
+    val lastPhoto = dao.getLastPhotoByCameraLabel(label)
+    if (lastPhoto != null && (lastPhoto.id != p.id)) {
+     try { context.contentResolver.delete(uri, null, null) } catch (_: Throwable) {}
+    }
+   }
    UploadOutcome.SUCCESS
   }catch(t:Throwable){dao.update(p.copy(uploadAttempts=p.uploadAttempts+1,lastUploadError=describe(t)));UploadOutcome.FAILED}
  }
