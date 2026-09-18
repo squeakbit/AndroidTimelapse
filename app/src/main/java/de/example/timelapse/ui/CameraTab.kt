@@ -32,11 +32,13 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import de.example.timelapse.R
 import de.example.timelapse.SettingsManager
 import de.example.timelapse.camera.CameraInfo
 import de.example.timelapse.camera.CameraPreviewController
@@ -163,11 +165,6 @@ fun CameraTab(
         }
     }
 
-    LaunchedEffect(selectedCameraId, liveEnabled) {
-        // No auto-refresh to keep UI responsive on older devices.
-        // User can manually click "Refresh" if needed.
-    }
-
     LaunchedEffect(liveEnabled, selectedCameraId, textureSurface) {
         val surface = textureSurface
         if (liveEnabled && surface != null && selectedCameraId.isNotBlank()) previewController.start(selectedCameraId, surface)
@@ -234,7 +231,7 @@ fun CameraTab(
                                 contentScale = ContentScale.Fit
                             )
                         }
-                        else -> Text("Kamera bereit", color = Color.Gray)
+                        else -> Text(stringResource(R.string.camera_ready), color = Color.Gray)
                     }
                 }
                 if (showGhost) {
@@ -324,7 +321,7 @@ fun CameraTab(
                         shape = RoundedCornerShape(4.dp)
                     ) {
                         Text(
-                            "Letztes Foto",
+                            stringResource(R.string.last_photo),
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                             color = Color.Yellow,
                             style = MaterialTheme.typography.labelSmall
@@ -387,7 +384,7 @@ fun CameraTab(
                     when {
                         !hasGhostPhoto.value -> {
                             Text(
-                                "Kein Referenzfoto für diese Kamera vorhanden",
+                                stringResource(R.string.no_reference_photo),
                                 color = Color.Gray,
                                 style = MaterialTheme.typography.labelSmall
                             )
@@ -408,18 +405,18 @@ fun CameraTab(
                             )
                         }
                         showGhost && ghostPhotoState is GhostPhotoState.Loading -> {
-                            Text("Lade Foto …", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                            Text(stringResource(R.string.loading_photo), color = Color.White, style = MaterialTheme.typography.labelSmall)
                         }
                         showGhost && ghostPhotoState is GhostPhotoState.LoadFailed -> {
                             Text(
-                                "Referenzfoto konnte nicht geladen werden (fehlende Berechtigung?)",
+                                stringResource(R.string.load_failed_ghost),
                                 color = Color(0xFFFF8A80),
                                 style = MaterialTheme.typography.labelSmall
                             )
                         }
                         else -> {
                             Text(
-                                "${facingLabel(selectedCamera?.facing ?: -1)} Kamera ${selectedCameraId}",
+                                "${facingLabel(context, selectedCamera?.facing ?: -1)} Kamera ${selectedCameraId}",
                                 color = Color.DarkGray,
                                 style = MaterialTheme.typography.labelSmall
                             )
@@ -437,25 +434,30 @@ fun CameraTab(
                 ) {
                     Icon(Icons.Default.Refresh, null)
                     Spacer(Modifier.width(8.dp))
-                    Text("Vorschau aktualisieren")
+                    Text(stringResource(R.string.refresh_preview))
                 }
             }
         }
 
         item {
-            SectionHeader("Hilfsmittel", Icons.Default.Handyman)
+            SectionHeader(stringResource(R.string.tools), Icons.Default.Handyman)
             ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Raster einblenden", modifier = Modifier.weight(1f))
+                        Text(stringResource(R.string.show_grid), modifier = Modifier.weight(1f))
                         Switch(checked = showGrid, onCheckedChange = { showGrid = it })
                     }
 
                     if (showGhost) {
                         HorizontalDivider(modifier = Modifier.alpha(0.3f))
-                        Text("Ghost-Modus", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 4.dp))
+                        Text(stringResource(R.string.ghost_mode), style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 4.dp))
                         SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                            val modes = listOf("Normal", "Differenz", "Blinken", "Kanten")
+                            val modes = listOf(
+                                stringResource(R.string.ghost_mode_normal),
+                                stringResource(R.string.ghost_mode_difference),
+                                stringResource(R.string.ghost_mode_blink),
+                                stringResource(R.string.ghost_mode_edges)
+                            )
                             val isDifferenceSupported = Build.VERSION.SDK_INT >= 29
                             
                             modes.forEachIndexed { index, label ->
@@ -472,7 +474,7 @@ fun CameraTab(
                         }
                         if (Build.VERSION.SDK_INT < 29) {
                             Text(
-                                "Differenz-Modus benötigt Android 10+",
+                                stringResource(R.string.difference_mode_requirement),
                                 color = MaterialTheme.colorScheme.error,
                                 style = MaterialTheme.typography.labelSmall,
                                 modifier = Modifier.padding(top = 2.dp)
@@ -481,7 +483,7 @@ fun CameraTab(
                         
                         HorizontalDivider(modifier = Modifier.alpha(0.3f))
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Automatisches Pendeln", modifier = Modifier.weight(1f))
+                            Text(stringResource(R.string.auto_oscillation), modifier = Modifier.weight(1f))
                             Switch(
                                 checked = ghostOscillationEnabled, 
                                 onCheckedChange = { ghostOscillationEnabled = it },
@@ -491,7 +493,7 @@ fun CameraTab(
                         if (ghostOscillationEnabled) {
                             Column(Modifier.padding(vertical = 8.dp)) {
                                 Text(
-                                    "Pendel-Bereich: ${(ghostOscillationRange.start * 100).toInt()}% – ${(ghostOscillationRange.endInclusive * 100).toInt()}%",
+                                    stringResource(R.string.oscillation_range, (ghostOscillationRange.start * 100).toInt(), (ghostOscillationRange.endInclusive * 100).toInt()),
                                     style = MaterialTheme.typography.bodySmall
                                 )
                                 RangeSlider(
@@ -513,14 +515,14 @@ fun CameraTab(
                         ) {
                             Icon(Icons.Default.Cached, null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text("Foto neu laden")
+                            Text(stringResource(R.string.reload_photo))
                         }
                     }
                 }
             }
         }
 
-        item { SectionHeader("Kamera wählen", Icons.Default.Cameraswitch) }
+        item { SectionHeader(stringResource(R.string.select_camera), Icons.Default.Cameraswitch) }
 
         items(cameras, key = { "tab_select_${it.id}" }) { camera ->
             ElevatedCard(
@@ -539,8 +541,8 @@ fun CameraTab(
                         settings.lastPreviewCameraId = camera.id
                     })
                     Column {
-                        Text("Kamera ${camera.id}", fontWeight = FontWeight.Bold)
-                        Text(facingLabel(camera.facing), style = MaterialTheme.typography.bodySmall)
+                        Text(stringResource(R.string.camera_label, camera.id), fontWeight = FontWeight.Bold)
+                        Text(facingLabel(context, camera.facing), style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }

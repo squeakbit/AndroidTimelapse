@@ -14,9 +14,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.exifinterface.media.ExifInterface
+import de.example.timelapse.R
 import de.example.timelapse.SettingsManager
 import de.example.timelapse.camera.CameraInfo
 import de.example.timelapse.data.AppDatabase
@@ -47,10 +50,6 @@ suspend fun loadGhostPhotoState(context: Context, cameraLabel: String?): GhostPh
         }
     }
 
-/**
- * Checks whether a DB entry not only exists but its underlying file/URI is
- * actually openable right now.
- */
 suspend fun hasReadableGhostPhoto(context: Context, cameraLabel: String?): Boolean =
     withContext(Dispatchers.IO) {
         if (cameraLabel == null) return@withContext false
@@ -142,11 +141,11 @@ fun decodeOrientedBitmap(context: Context, uri: Uri): Bitmap? {
     return rotateBitmapIfNeeded(bitmap, degrees)
 }
 
-fun facingLabel(facing: Int): String = when (facing) {
-    0 -> "Front"
-    1 -> "Back"
-    2 -> "External"
-    else -> "Unbekannt"
+fun facingLabel(context: Context, facing: Int): String = when (facing) {
+    0 -> context.getString(R.string.facing_front)
+    1 -> context.getString(R.string.facing_back)
+    2 -> context.getString(R.string.facing_external)
+    else -> context.getString(R.string.facing_unknown)
 }
 
 fun applySobelFilter(source: Bitmap): Bitmap {
@@ -179,9 +178,7 @@ fun applySobelFilter(source: Bitmap): Bitmap {
                 1 * gray[(y + 1) * width + (x - 1)] + 2 * gray[(y + 1) * width + x] + 1 * gray[(y + 1) * width + (x + 1)]
             )
             val magnitude = Math.min(255, Math.sqrt((gx * gx + gy * gy).toDouble()).toInt())
-            // White edges on transparent background would be nice, but black background is easier for standard blending.
-            // Let's go with white edges on transparent for "Edge Highlighting".
-            if (magnitude > 40) { // Simple threshold
+            if (magnitude > 40) {
                 outputPixels[y * width + x] = 0xFFFFFFFF.toInt()
             } else {
                 outputPixels[y * width + x] = 0x00000000
@@ -200,10 +197,11 @@ fun CameraSelectionRow(
     onCheckedChange: (Boolean) -> Unit,
     settings: SettingsManager
 ) {
+    val context = LocalContext.current
     var resExpanded by remember(camera.id) { mutableStateOf(false) }
     var override by remember(camera.id) { mutableStateOf(settings.cameraResolutionOverride(camera.id)) }
     val defaultLabel = "${settings.cameraWidth} × ${settings.cameraHeight}"
-    val currentLabel = override?.let { "${it.first} × ${it.second}" } ?: "Standard ($defaultLabel)"
+    val currentLabel = override?.let { "${it.first} × ${it.second}" } ?: stringResource(R.string.standard_label, defaultLabel)
 
     ElevatedCard(
         modifier = Modifier.fillMaxWidth(),
@@ -217,12 +215,12 @@ fun CameraSelectionRow(
                 Checkbox(checked = checked, onCheckedChange = onCheckedChange)
                 Column(Modifier.weight(1f)) {
                     Text(
-                        text = "Kamera ${camera.id}",
+                        text = stringResource(R.string.camera_label, camera.id),
                         style = MaterialTheme.typography.bodyLarge,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = facingLabel(camera.facing) + (if (camera.logicalMultiCamera) " (Multi)" else ""),
+                        text = facingLabel(context, camera.facing) + (if (camera.logicalMultiCamera) " (Multi)" else ""),
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
@@ -237,7 +235,7 @@ fun CameraSelectionRow(
                         value = currentLabel,
                         onValueChange = {},
                         readOnly = true,
-                        label = { Text("Auflösung") },
+                        label = { Text(stringResource(R.string.resolution)) },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = resExpanded) },
                         modifier = Modifier.menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable).fillMaxWidth(),
                         textStyle = MaterialTheme.typography.bodySmall
@@ -247,7 +245,7 @@ fun CameraSelectionRow(
                         onDismissRequest = { resExpanded = false }
                     ) {
                         DropdownMenuItem(
-                            text = { Text("Standard ($defaultLabel)") },
+                            text = { Text(stringResource(R.string.standard_label, defaultLabel)) },
                             onClick = {
                                 settings.clearCameraResolutionOverride(camera.id)
                                 override = null

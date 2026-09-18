@@ -13,11 +13,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import de.example.timelapse.AlarmScheduler
+import de.example.timelapse.R
 import de.example.timelapse.SecureSecrets
 import de.example.timelapse.SettingsManager
 import de.example.timelapse.camera.CameraInfo
@@ -41,11 +43,13 @@ fun SettingsTab(onRequestIgnoreBatteryOptimizations: () -> Unit) {
     var discoveryStatus by remember { mutableStateOf("") }
     var discoveryTesting by remember { mutableStateOf(false) }
 
-    // Proper Compose state to ensure UI updates immediately
     var smbUploadEnabled by remember { mutableStateOf(settings.smbUploadEnabled) }
     var deleteAfterUpload by remember { mutableStateOf(settings.deleteAfterUpload) }
     var smbUploadHour by remember { mutableIntStateOf(settings.smbUploadHour) }
     var smbUploadMinute by remember { mutableIntStateOf(settings.smbUploadMinute) }
+    
+    val loadingStr = stringResource(R.string.loading)
+    val errorStr = stringResource(R.string.upload_failed)
 
     LaunchedEffect(Unit) { 
         cameras = withContext(Dispatchers.IO) { CameraRepository(context).list() } 
@@ -53,29 +57,29 @@ fun SettingsTab(onRequestIgnoreBatteryOptimizations: () -> Unit) {
 
     LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
-            SectionHeader("Allgemein", Icons.Default.Info)
+            SectionHeader(stringResource(R.string.general), Icons.Default.Info)
             OutlinedTextField(
                 value = settings.deviceName,
                 onValueChange = { settings.deviceName = it },
-                label = { Text("Gerätename") },
+                label = { Text(stringResource(R.string.device_name)) },
                 modifier = Modifier.fillMaxWidth(),
                 leadingIcon = { Icon(Icons.Default.Label, null) }
             )
-            Text("ID: ${settings.deviceId}", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
+            Text(stringResource(R.string.id_label, settings.deviceId), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
         }
 
         item {
-            SectionHeader("Standard-Auflösung", Icons.Default.AspectRatio)
+            SectionHeader(stringResource(R.string.standard_resolution), Icons.Default.AspectRatio)
             val selectedCamera = cameras.firstOrNull { it.id in settings.selectedCameraIds } ?: cameras.firstOrNull()
             var resolutionExpanded by remember { mutableStateOf(false) }
             val currentSize = selectedCamera?.sizes?.firstOrNull { it.width == settings.cameraWidth && it.height == settings.cameraHeight } ?: selectedCamera?.sizes?.firstOrNull()
 
             ExposedDropdownMenuBox(expanded = resolutionExpanded, onExpandedChange = { resolutionExpanded = it }) {
                 OutlinedTextField(
-                    value = currentSize?.toString() ?: "Lade...",
+                    value = currentSize?.toString() ?: loadingStr,
                     onValueChange = {},
                     readOnly = true,
-                    label = { Text("Bildgröße") },
+                    label = { Text(stringResource(R.string.image_size)) },
                     trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = resolutionExpanded) },
                     modifier = Modifier.menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable).fillMaxWidth()
                 )
@@ -91,11 +95,11 @@ fun SettingsTab(onRequestIgnoreBatteryOptimizations: () -> Unit) {
         }
 
         item {
-            SectionHeader("SMB Cloud", Icons.Default.Cloud)
+            SectionHeader(stringResource(R.string.smb_cloud), Icons.Default.Cloud)
             ElevatedCard {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Autoupload", modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                        Text(stringResource(R.string.auto_upload), modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
                         Switch(
                             checked = smbUploadEnabled,
                             onCheckedChange = {
@@ -118,16 +122,16 @@ fun SettingsTab(onRequestIgnoreBatteryOptimizations: () -> Unit) {
                     ) {
                         Icon(Icons.Default.Schedule, null)
                         Spacer(Modifier.width(8.dp))
-                        Text("Upload täglich um %02d:%02d".format(smbUploadHour, smbUploadMinute))
+                        Text(stringResource(R.string.upload_daily_at, smbUploadHour, smbUploadMinute))
                     }
 
-                    OutlinedTextField(value = settings.smbHost, onValueChange = { settings.smbHost = it }, label = { Text("Server") }, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = settings.smbShare, onValueChange = { settings.smbShare = it }, label = { Text("Share") }, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = secrets.smbUsername, onValueChange = { secrets.smbUsername = it }, label = { Text("User") }, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = secrets.smbPassword, onValueChange = { secrets.smbPassword = it }, label = { Text("Passwort") }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = settings.smbHost, onValueChange = { settings.smbHost = it }, label = { Text(stringResource(R.string.server)) }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = settings.smbShare, onValueChange = { settings.smbShare = it }, label = { Text(stringResource(R.string.share)) }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = secrets.smbUsername, onValueChange = { secrets.smbUsername = it }, label = { Text(stringResource(R.string.user)) }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = secrets.smbPassword, onValueChange = { secrets.smbPassword = it }, label = { Text(stringResource(R.string.password)) }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Bilder nach Upload löschen", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                        Text(stringResource(R.string.delete_after_upload), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
                         Switch(
                             checked = deleteAfterUpload,
                             onCheckedChange = {
@@ -137,7 +141,7 @@ fun SettingsTab(onRequestIgnoreBatteryOptimizations: () -> Unit) {
                         )
                     }
                     Text(
-                        "Das aktuellste Referenzfoto pro Kamera bleibt als 'Ghost' erhalten.",
+                        stringResource(R.string.delete_hint),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                     )
@@ -145,47 +149,51 @@ fun SettingsTab(onRequestIgnoreBatteryOptimizations: () -> Unit) {
                     Button(
                         enabled = !smbTesting,
                         onClick = {
-                            smbTesting = true; smbTestStatus = "Teste..."
+                            smbTesting = true; smbTestStatus = loadingStr
                             scope.launch {
                                 val r = SmbUploader(context).testConnection()
-                                smbTestStatus = r.fold(onSuccess = { "OK: $it" }, onFailure = { "Fehler" })
+                                smbTestStatus = r.fold(onSuccess = { "OK: $it" }, onFailure = { errorStr })
                                 smbTesting = false
                             }
                         },
                         modifier = Modifier.fillMaxWidth()
-                    ) { Text("SMB Testen") }
+                    ) { Text(stringResource(R.string.test_smb)) }
                     if (smbTestStatus.isNotBlank()) Text(smbTestStatus, style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
 
         item {
-            SectionHeader("MQTT / HA", Icons.Default.Wifi)
+            SectionHeader(stringResource(R.string.mqtt_ha), Icons.Default.Wifi)
             ElevatedCard {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedTextField(value = settings.mqttHost, onValueChange = { settings.mqttHost = it }, label = { Text("Server") }, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = secrets.mqttUsername, onValueChange = { secrets.mqttUsername = it }, label = { Text("Benutzername") }, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = secrets.mqttPassword, onValueChange = { secrets.mqttPassword = it }, label = { Text("Passwort") }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = settings.mqttHost, onValueChange = { settings.mqttHost = it }, label = { Text(stringResource(R.string.server)) }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = secrets.mqttUsername, onValueChange = { secrets.mqttUsername = it }, label = { Text(stringResource(R.string.username)) }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = secrets.mqttPassword, onValueChange = { secrets.mqttPassword = it }, label = { Text(stringResource(R.string.password)) }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
 
                     Button(
                         enabled = !discoveryTesting,
                         onClick = {
-                            discoveryTesting = true; discoveryStatus = "Sende..."
+                            discoveryTesting = true; discoveryStatus = loadingStr
                             scope.launch {
-                                try { withContext(Dispatchers.IO) { MqttClientManager(context).connectAndDiscover() }; discoveryStatus = "OK" }
-                                catch (e: Exception) { discoveryStatus = "Fehler" }
+                                try { 
+                                    withContext(Dispatchers.IO) { MqttClientManager(context).connectAndDiscover() }
+                                    discoveryStatus = "OK" 
+                                } catch (e: Exception) { 
+                                    discoveryStatus = errorStr 
+                                }
                                 discoveryTesting = false
                             }
                         },
                         modifier = Modifier.fillMaxWidth()
-                    ) { Text("Discovery Senden") }
+                    ) { Text(stringResource(R.string.send_discovery)) }
                     if (discoveryStatus.isNotBlank()) Text(discoveryStatus, style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
 
         item {
-            SectionHeader("System", Icons.Default.Build)
+            SectionHeader(stringResource(R.string.system), Icons.Default.Build)
             val powerManager = remember { context.getSystemService(PowerManager::class.java) }
             val ignoringOpt = remember { mutableStateOf(powerManager.isIgnoringBatteryOptimizations(context.packageName)) }
 
@@ -194,7 +202,7 @@ fun SettingsTab(onRequestIgnoreBatteryOptimizations: () -> Unit) {
                 colors = ButtonDefaults.buttonColors(containerColor = if (ignoringOpt.value) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.error),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text(if (ignoringOpt.value) "Akku-Optimierung: AUS" else "Optimierung deaktivieren!", color = if (ignoringOpt.value) MaterialTheme.colorScheme.onSurfaceVariant else Color.White)
+                Text(if (ignoringOpt.value) stringResource(R.string.battery_opt_off) else stringResource(R.string.disable_optimization), color = if (ignoringOpt.value) MaterialTheme.colorScheme.onSurfaceVariant else Color.White)
             }
         }
     }

@@ -33,6 +33,7 @@ class MqttDiscovery(private val mqtt: MqttClientManager, private val s: Settings
             put("payload_on", "ON")
             put("payload_off", "OFF")
             put("retain", true)
+            put("optimistic", true)
             put("icon", "mdi:cloud-upload")
             put("device", device())
         })

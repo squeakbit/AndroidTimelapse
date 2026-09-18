@@ -15,10 +15,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import de.example.timelapse.AlarmScheduler
+import de.example.timelapse.R
 import de.example.timelapse.SettingsManager
 import de.example.timelapse.camera.CameraInfo
 import de.example.timelapse.camera.CameraRepository
@@ -55,27 +57,27 @@ fun HomeTab(
     var testStatus by remember { mutableStateOf("") }
     val testModeMaxShots = 30
 
-    LaunchedEffect(Unit) {
-        cameras = withContext(Dispatchers.IO) { CameraRepository(context).list() }
-        if (selectedIds.isEmpty() && cameras.isNotEmpty()) {
-            selectedIds = setOf(cameras.first().id)
-            settings.selectedCameraIds = selectedIds
-        }
-    }
+    val nextTestPhotoInStr = stringResource(R.string.next_test_photo_in)
+    val takingTestPhotosStr = stringResource(R.string.taking_test_photos)
+    val testPhotoOutcomeStr = stringResource(R.string.test_photo_outcome)
+    val testLimitReachedStr = stringResource(R.string.test_limit_reached)
+    val noCameraAvailableStr = stringResource(R.string.no_camera_available)
+    val uploadSuccessStr = stringResource(R.string.upload_success)
+    val uploadFailedStr = stringResource(R.string.upload_failed)
 
     LaunchedEffect(testModeEnabled, testIntervalSeconds) {
         if (testModeEnabled) {
             testShotsTaken = 0
             while (testModeEnabled && testShotsTaken < testModeMaxShots) {
-                testStatus = "Nächstes Testfoto in ${testIntervalSeconds}s …"
+                testStatus = nextTestPhotoInStr.format(testIntervalSeconds)
                 delay(testIntervalSeconds.seconds)
                 if (!testModeEnabled) break
-                testStatus = "Nehme Testfoto(s) auf …"
+                testStatus = takingTestPhotosStr
                 val outcome = withContext(Dispatchers.IO) {
                     try {
                         val liveSettings = SettingsManager(context)
                         val resolvedCameras = PhotoCaptureHelper.resolveCameras(context, liveSettings)
-                        if (resolvedCameras.isEmpty()) throw IllegalStateException("Keine Kamera verfügbar")
+                        if (resolvedCameras.isEmpty()) throw IllegalStateException(noCameraAvailableStr)
                         for (camera in resolvedCameras) {
                             val (w, h) = PhotoCaptureHelper.resolveResolution(liveSettings, camera.id)
                             PhotoCaptureHelper.captureAndSave(
@@ -88,16 +90,16 @@ fun HomeTab(
                             )
                         }
                         val result = SmbUploader(context).uploadPendingPhotos()
-                        "OK (${resolvedCameras.size} Kamera(s)) – hochgeladen: ${result.uploaded}"
+                        "OK (${resolvedCameras.size}) – ${uploadSuccessStr.format(result.uploaded)}"
                     } catch (t: Throwable) {
-                        "Fehler: ${t.message ?: t.javaClass.simpleName}"
+                        "${uploadFailedStr}: ${t.message ?: t.javaClass.simpleName}"
                     }
                 }
                 testShotsTaken++
-                testStatus = "Foto #$testShotsTaken: $outcome"
+                testStatus = testPhotoOutcomeStr.format(testShotsTaken, outcome)
             }
             if (testShotsTaken >= testModeMaxShots) {
-                testStatus += " — Limit erreicht."
+                testStatus += testLimitReachedStr
                 onTestModeChange(false)
             }
         }
@@ -118,8 +120,8 @@ fun HomeTab(
                     Icon(if (enabled) Icons.Default.Timer else Icons.Default.TimerOff, null, modifier = Modifier.size(32.dp))
                     Spacer(Modifier.width(16.dp))
                     Column(Modifier.weight(1f)) {
-                        Text("Timelapse Modus", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                        Text(if (enabled) "Aktiv • Alle $interval Min." else "Deaktiviert", style = MaterialTheme.typography.bodyMedium)
+                        Text(stringResource(R.string.timelapse_mode), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Text(if (enabled) stringResource(R.string.active_every, interval) else stringResource(R.string.disabled), style = MaterialTheme.typography.bodyMedium)
                     }
                     Switch(
                         checked = enabled,
@@ -143,7 +145,7 @@ fun HomeTab(
         }
 
         item {
-            SectionHeader("Zeitsteuerung", Icons.Default.Schedule)
+            SectionHeader(stringResource(R.string.time_control), Icons.Default.Schedule)
             OutlinedTextField(
                 value = interval,
                 onValueChange = { value ->
@@ -153,7 +155,7 @@ fun HomeTab(
                         AlarmScheduler(context).scheduleAll()
                     }
                 },
-                label = { Text("Intervall (Minuten)") },
+                label = { Text(stringResource(R.string.interval_minutes)) },
                 leadingIcon = { Icon(Icons.Default.Update, null) },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 modifier = Modifier.fillMaxWidth()
@@ -161,14 +163,14 @@ fun HomeTab(
         }
 
         item {
-            SectionHeader("Aktive Kameras", Icons.Default.PhotoCamera)
+            SectionHeader(stringResource(R.string.active_cameras), Icons.Default.PhotoCamera)
             if (cameras.size > 1) {
                 Row(
                     Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    SuggestionChip(onClick = { selectedIds = cameras.map { it.id }.toSet(); settings.selectedCameraIds = selectedIds }, label = { Text("Alle") })
-                    SuggestionChip(onClick = { selectedIds = emptySet(); settings.selectedCameraIds = selectedIds }, label = { Text("Keine") })
+                    SuggestionChip(onClick = { selectedIds = cameras.map { it.id }.toSet(); settings.selectedCameraIds = selectedIds }, label = { Text(stringResource(R.string.all)) })
+                    SuggestionChip(onClick = { selectedIds = emptySet(); settings.selectedCameraIds = selectedIds }, label = { Text(stringResource(R.string.none)) })
                 }
             }
         }
@@ -186,15 +188,16 @@ fun HomeTab(
         }
 
         item {
-            SectionHeader("Manuelle Aktionen", Icons.Default.CloudUpload)
+            SectionHeader(stringResource(R.string.manual_actions), Icons.Default.CloudUpload)
+            val uploadingStr = stringResource(R.string.uploading)
             Button(
                 enabled = !uploading,
                 onClick = {
                     uploading = true
-                    uploadStatus = "Lade hoch …"
+                    uploadStatus = uploadingStr
                     scope.launch {
                         val result = try { SmbUploader(context).uploadPendingPhotos() } catch (_: Throwable) { null }
-                        uploadStatus = if (result != null) "Erfolgreich: ${result.uploaded}" else "Fehler"
+                        uploadStatus = if (result != null) uploadSuccessStr.format(result.uploaded) else uploadFailedStr
                         withContext(Dispatchers.IO) {
                             try {
                                 val mqtt = MqttClientManager(context)
@@ -213,17 +216,17 @@ fun HomeTab(
             ) {
                 Icon(Icons.Default.Upload, null)
                 Spacer(Modifier.width(8.dp))
-                Text("Jetzt hochladen")
+                Text(stringResource(R.string.upload_now))
             }
             if (uploadStatus.isNotBlank()) Text(uploadStatus, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
         }
 
         item {
-            SectionHeader("Testmodus", Icons.Default.BugReport)
+            SectionHeader(stringResource(R.string.test_mode), Icons.Default.BugReport)
             ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Kurzzeit-Testlauf", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                        Text(stringResource(R.string.short_term_test), fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                         Switch(checked = testModeEnabled, onCheckedChange = { onTestModeChange(it); if (it) testStatus = "" })
                     }
                     if (testModeEnabled) {
@@ -232,7 +235,7 @@ fun HomeTab(
                             FilterChip(selected = testIntervalSeconds == 10, onClick = { testIntervalSeconds = 10 }, label = { Text("10s") })
                             FilterChip(selected = testIntervalSeconds == 30, onClick = { testIntervalSeconds = 30 }, label = { Text("30s") })
                         }
-                        Text("Fortschritt: $testShotsTaken / $testModeMaxShots", style = MaterialTheme.typography.bodySmall)
+                        Text(stringResource(R.string.progress, testShotsTaken, testModeMaxShots), style = MaterialTheme.typography.bodySmall)
                         if (testStatus.isNotBlank()) Text(testStatus, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                     }
                 }

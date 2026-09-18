@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -36,6 +37,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
         cameraPermission.launch(Manifest.permission.CAMERA)
         if (Build.VERSION.SDK_INT >= 33) {
             mediaPermission.launch(arrayOf(Manifest.permission.READ_MEDIA_IMAGES))
@@ -83,7 +85,7 @@ class MainActivity : ComponentActivity() {
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("Android Timelapse", fontWeight = FontWeight.Bold) },
+                    title = { Text(stringResource(R.string.app_name), fontWeight = FontWeight.Bold) },
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = MaterialTheme.colorScheme.primaryContainer,
                         titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
@@ -93,9 +95,9 @@ class MainActivity : ComponentActivity() {
         ) { padding ->
             Column(Modifier.fillMaxSize().padding(padding)) {
                 PrimaryTabRow(selectedTabIndex = tab) {
-                    Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Start") }, icon = { Icon(Icons.Default.PlayArrow, null) })
-                    Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Kamera") }, icon = { Icon(Icons.Default.CameraAlt, null) })
-                    Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("Setup") }, icon = { Icon(Icons.Default.Settings, null) })
+                    Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text(stringResource(R.string.tab_start)) }, icon = { Icon(Icons.Default.PlayArrow, null) })
+                    Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text(stringResource(R.string.tab_camera)) }, icon = { Icon(Icons.Default.CameraAlt, null) })
+                    Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text(stringResource(R.string.tab_setup)) }, icon = { Icon(Icons.Default.Settings, null) })
                 }
                 when (tab) {
                     0 -> HomeTab(
