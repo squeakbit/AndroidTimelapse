@@ -41,7 +41,7 @@ fun SettingsTab(onRequestIgnoreBatteryOptimizations: () -> Unit) {
     val scope = rememberCoroutineScope()
     val settings = remember { SettingsManager(context) }
     val secrets = remember { SecureSecrets.getInstance(context) }
-    
+
     // Explicit UI states for text fields to ensure responsiveness
     var deviceName by remember { mutableStateOf(settings.deviceName) }
     var smbHost by remember { mutableStateOf(settings.smbHost) }
@@ -58,11 +58,12 @@ fun SettingsTab(onRequestIgnoreBatteryOptimizations: () -> Unit) {
     var discoveryStatus by remember { mutableStateOf("") }
     var discoveryTesting by remember { mutableStateOf(false) }
 
+    var smbRemoteDirectory by remember { mutableStateOf(settings.smbRemoteDirectory) }
     var smbUploadEnabled by remember { mutableStateOf(settings.smbUploadEnabled) }
     var deleteAfterUpload by remember { mutableStateOf(settings.deleteAfterUpload) }
     var smbUploadHour by remember { mutableIntStateOf(settings.smbUploadHour) }
     var smbUploadMinute by remember { mutableIntStateOf(settings.smbUploadMinute) }
-    
+
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -84,7 +85,7 @@ fun SettingsTab(onRequestIgnoreBatteryOptimizations: () -> Unit) {
             SectionHeader(stringResource(R.string.general), Icons.Default.Info)
             OutlinedTextField(
                 value = deviceName,
-                onValueChange = { 
+                onValueChange = {
                     deviceName = it
                     settings.deviceName = it
                 },
@@ -154,6 +155,12 @@ fun SettingsTab(onRequestIgnoreBatteryOptimizations: () -> Unit) {
 
                     OutlinedTextField(value = smbHost, onValueChange = { smbHost = it; settings.smbHost = it }, label = { Text(stringResource(R.string.server)) }, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(value = smbShare, onValueChange = { smbShare = it; settings.smbShare = it }, label = { Text(stringResource(R.string.share)) }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(
+                        value = smbRemoteDirectory,
+                        onValueChange = { smbRemoteDirectory = it; settings.smbRemoteDirectory = it },
+                        label = { Text(stringResource(R.string.remote_folder)) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
                     OutlinedTextField(value = smbUser, onValueChange = { smbUser = it; secrets.smbUsername = it }, label = { Text(stringResource(R.string.user)) }, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(value = smbPass, onValueChange = { smbPass = it; secrets.smbPassword = it }, label = { Text(stringResource(R.string.password)) }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
 
@@ -181,10 +188,10 @@ fun SettingsTab(onRequestIgnoreBatteryOptimizations: () -> Unit) {
                                 try {
                                     val r = SmbUploader(context).testConnection()
                                     smbTestStatus = r.fold(
-                                        onSuccess = { "OK: $it" }, 
-                                        onFailure = { 
+                                        onSuccess = { "OK: $it" },
+                                        onFailure = {
                                             Log.e("Timelapse", "SMB Test failed", it)
-                                            it.message ?: it.javaClass.simpleName 
+                                            it.message ?: it.javaClass.simpleName
                                         }
                                     )
                                 } catch (t: Throwable) {
@@ -215,12 +222,12 @@ fun SettingsTab(onRequestIgnoreBatteryOptimizations: () -> Unit) {
                         onClick = {
                             discoveryTesting = true; discoveryStatus = loadingStr
                             scope.launch {
-                                try { 
+                                try {
                                     withContext(Dispatchers.IO) { MqttClientManager(context).connectAndDiscover() }
-                                    discoveryStatus = "OK" 
-                                } catch (e: Exception) { 
+                                    discoveryStatus = "OK"
+                                } catch (e: Exception) {
                                     Log.e("Timelapse", "MQTT Discovery failed", e)
-                                    discoveryStatus = e.message ?: errorStr 
+                                    discoveryStatus = e.message ?: errorStr
                                 } finally {
                                     discoveryTesting = false
                                 }

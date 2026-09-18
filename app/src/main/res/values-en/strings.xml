@@ -51,6 +51,7 @@
     <string name="upload_daily_at">Upload daily at %1$02d:%2$02d</string>
     <string name="server">Server</string>
     <string name="share">Share</string>
+    <string name="remote_folder">Remote folder</string>
     <string name="user">User</string>
     <string name="password">Password</string>
     <string name="delete_after_upload">Delete photos after upload</string>
