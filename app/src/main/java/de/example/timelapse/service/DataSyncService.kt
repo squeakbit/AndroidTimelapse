@@ -2,6 +2,8 @@ package de.example.timelapse.service
 import android.app.*;import android.content.*;import android.content.pm.ServiceInfo;import android.os.*;import de.example.timelapse.*;import de.example.timelapse.data.*;import de.example.timelapse.mqtt.*;import de.example.timelapse.smb.*
 import de.example.timelapse.camera.StorageCleanupHelper
 import kotlinx.coroutines.*
+import java.time.Instant
+
 class DataSyncService:Service(){
  companion object{const val ACTION_UPLOAD="de.example.timelapse.UPLOAD"}
  private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
@@ -20,7 +22,8 @@ class DataSyncService:Service(){
  private suspend fun run(a:String?){
   val s=SettingsManager(this);val mqtt=MqttClientManager(this)
   try{
-   if(a==ACTION_UPLOAD&&s.smbUploadEnabled){val r=SmbUploader(this).uploadPendingPhotos();mqtt.publish("timelapse/${s.deviceId}/last_upload_count",r.uploaded.toString());mqtt.publish("timelapse/${s.deviceId}/last_upload_failed",r.failed.toString());mqtt.publish("timelapse/${s.deviceId}/last_upload",java.time.Instant.now().toString())}
+   if(a==ACTION_UPLOAD&&s.smbUploadEnabled){val r=SmbUploader(this).uploadPendingPhotos();mqtt.publish("timelapse/${s.deviceId}/last_upload_count",r.uploaded.toString());mqtt.publish("timelapse/${s.deviceId}/last_upload_failed",r.failed.toString());if(r.lastError!=null)mqtt.publish("timelapse/${s.deviceId}/last_error",r.lastError);mqtt.publish("timelapse/${s.deviceId}/last_upload",
+       Instant.now().toString())}
    // Also (re)publishes MQTT discovery + current state, so Home Assistant
    // stays in sync at least once a day even if no photo was captured
    // in between (e.g. timelapse disabled, only manual SMB upload used).

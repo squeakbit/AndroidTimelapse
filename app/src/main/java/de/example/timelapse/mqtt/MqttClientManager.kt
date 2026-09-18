@@ -64,8 +64,9 @@ class MqttClientManager(private val context:Context){
   val c=MqttAsyncClient(uri,settings.mqttClientId, null)
   val o=MqttConnectionOptions().apply{
    isCleanStart=true; isAutomaticReconnect=false
-   userName=SecureSecrets(context).mqttUsername.ifBlank{settings.mqttUsername}
-   password=SecureSecrets(context).mqttPassword.ifBlank{settings.mqttPassword}.toByteArray()
+   val secrets = SecureSecrets.getInstance(context)
+   userName=secrets.mqttUsername.ifBlank{settings.mqttUsername}
+   password=secrets.mqttPassword.ifBlank{settings.mqttPassword}.toByteArray()
   }
   c.connect(o).waitForCompletion(15_000)
   client = c

@@ -4,7 +4,18 @@ import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 
-class SecureSecrets(context: Context) {
+class SecureSecrets private constructor(context: Context) {
+    companion object {
+        @Volatile
+        private var INSTANCE: SecureSecrets? = null
+
+        fun getInstance(context: Context): SecureSecrets {
+            return INSTANCE ?: synchronized(this) {
+                INSTANCE ?: SecureSecrets(context.applicationContext).also { INSTANCE = it }
+            }
+        }
+    }
+
     private val prefs = EncryptedSharedPreferences.create(
         context,
         "secrets",
@@ -12,6 +23,7 @@ class SecureSecrets(context: Context) {
         EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
     )
+    
     var mqttUsername: String
         get() = prefs.getString("mqtt_user", "") ?: ""
         set(v) = prefs.edit().putString("mqtt_user", v).apply()

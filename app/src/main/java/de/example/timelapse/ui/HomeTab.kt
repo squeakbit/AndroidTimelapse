@@ -19,6 +19,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import de.example.timelapse.AlarmScheduler
 import de.example.timelapse.R
 import de.example.timelapse.SettingsManager
@@ -34,13 +37,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.Instant
-import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeTab(
-    testModeEnabled: Boolean,
-    onTestModeChange: (Boolean) -> Unit,
     onEnsureCameraServiceRunning: () -> Unit
 ) {
     val context = LocalContext.current
@@ -52,58 +52,26 @@ fun HomeTab(
     var selectedIds by remember { mutableStateOf(settings.selectedCameraIds) }
     var uploadStatus by remember { mutableStateOf("") }
     var uploading by remember { mutableStateOf(false) }
-    var testIntervalSeconds by remember { mutableIntStateOf(10) }
-    var testShotsTaken by remember { mutableIntStateOf(0) }
-    var testStatus by remember { mutableStateOf("") }
-    val testModeMaxShots = 30
 
-    val nextTestPhotoInStr = stringResource(R.string.next_test_photo_in)
-    val takingTestPhotosStr = stringResource(R.string.taking_test_photos)
-    val testPhotoOutcomeStr = stringResource(R.string.test_photo_outcome)
-    val testLimitReachedStr = stringResource(R.string.test_limit_reached)
-    val noCameraAvailableStr = stringResource(R.string.no_camera_available)
-    val uploadSuccessStr = stringResource(R.string.upload_success)
-    val uploadFailedStr = stringResource(R.string.upload_failed)
-
-    LaunchedEffect(testModeEnabled, testIntervalSeconds) {
-        if (testModeEnabled) {
-            testShotsTaken = 0
-            while (testModeEnabled && testShotsTaken < testModeMaxShots) {
-                testStatus = nextTestPhotoInStr.format(testIntervalSeconds)
-                delay(testIntervalSeconds.seconds)
-                if (!testModeEnabled) break
-                testStatus = takingTestPhotosStr
-                val outcome = withContext(Dispatchers.IO) {
-                    try {
-                        val liveSettings = SettingsManager(context)
-                        val resolvedCameras = PhotoCaptureHelper.resolveCameras(context, liveSettings)
-                        if (resolvedCameras.isEmpty()) throw IllegalStateException(noCameraAvailableStr)
-                        for (camera in resolvedCameras) {
-                            val (w, h) = PhotoCaptureHelper.resolveResolution(liveSettings, camera.id)
-                            PhotoCaptureHelper.captureAndSave(
-                                context,
-                                camera.id,
-                                w,
-                                h,
-                                liveSettings.jpegQuality,
-                                PhotoCaptureHelper.cameraLabel(camera)
-                            )
-                        }
-                        val result = SmbUploader(context).uploadPendingPhotos()
-                        "OK (${resolvedCameras.size}) – ${uploadSuccessStr.format(result.uploaded)}"
-                    } catch (t: Throwable) {
-                        "${uploadFailedStr}: ${t.message ?: t.javaClass.simpleName}"
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                scope.launch {
+                    cameras = withContext(Dispatchers.IO) { CameraRepository(context).list() }
+                    if (selectedIds.isEmpty() && cameras.isNotEmpty()) {
+                        selectedIds = setOf(cameras.first().id)
+                        settings.selectedCameraIds = selectedIds
                     }
                 }
-                testShotsTaken++
-                testStatus = testPhotoOutcomeStr.format(testShotsTaken, outcome)
-            }
-            if (testShotsTaken >= testModeMaxShots) {
-                testStatus += testLimitReachedStr
-                onTestModeChange(false)
             }
         }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
+
+    val uploadSuccessStr = stringResource(R.string.upload_success)
+    val uploadFailedStr = stringResource(R.string.upload_failed)
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -196,13 +164,26 @@ fun HomeTab(
                     uploading = true
                     uploadStatus = uploadingStr
                     scope.launch {
-                        val result = try { SmbUploader(context).uploadPendingPhotos() } catch (_: Throwable) { null }
-                        uploadStatus = if (result != null) uploadSuccessStr.format(result.uploaded) else uploadFailedStr
+                        val result = try { 
+                            SmbUploader(context).uploadPendingPhotos() 
+                        } catch (t: Throwable) { 
+                            null 
+                        }
+                        
+                        uploadStatus = if (result != null) {
+                            if (result.uploaded > 0) uploadSuccessStr.format(result.uploaded)
+                            else if (result.failed > 0) "${uploadFailedStr}: ${result.lastError ?: "Upload failed"}"
+                            else "No photos pending"
+                        } else uploadFailedStr
+                        
+                        // MQTT Update
                         withContext(Dispatchers.IO) {
                             try {
                                 val mqtt = MqttClientManager(context)
-                                if (result != null) {
+                                if (result != null && result.uploaded > 0) {
                                     mqtt.publish("timelapse/${settings.deviceId}/last_upload", Instant.now().toString())
+                                    // Clear pending manual upload requests if we just finished one
+                                    settings.manualUploadRequested = false
                                 }
                                 MqttDiscovery(mqtt, settings, context).publishState()
                                 mqtt.close()
@@ -219,27 +200,6 @@ fun HomeTab(
                 Text(stringResource(R.string.upload_now))
             }
             if (uploadStatus.isNotBlank()) Text(uploadStatus, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
-        }
-
-        item {
-            SectionHeader(stringResource(R.string.test_mode), Icons.Default.BugReport)
-            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(stringResource(R.string.short_term_test), fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                        Switch(checked = testModeEnabled, onCheckedChange = { onTestModeChange(it); if (it) testStatus = "" })
-                    }
-                    if (testModeEnabled) {
-                        Spacer(Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FilterChip(selected = testIntervalSeconds == 10, onClick = { testIntervalSeconds = 10 }, label = { Text("10s") })
-                            FilterChip(selected = testIntervalSeconds == 30, onClick = { testIntervalSeconds = 30 }, label = { Text("30s") })
-                        }
-                        Text(stringResource(R.string.progress, testShotsTaken, testModeMaxShots), style = MaterialTheme.typography.bodySmall)
-                        if (testStatus.isNotBlank()) Text(testStatus, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                    }
-                }
-            }
         }
     }
 }

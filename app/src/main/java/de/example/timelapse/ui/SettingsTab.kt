@@ -2,6 +2,7 @@ package de.example.timelapse.ui
 
 import android.app.TimePickerDialog
 import android.os.PowerManager
+import android.util.Log
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.KeyboardOptions
@@ -18,6 +19,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import de.example.timelapse.AlarmScheduler
 import de.example.timelapse.R
 import de.example.timelapse.SecureSecrets
@@ -33,10 +37,21 @@ import kotlinx.coroutines.withContext
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsTab(onRequestIgnoreBatteryOptimizations: () -> Unit) {
-    val context = LocalContext.current
+    val context = LocalContext.current.applicationContext
     val scope = rememberCoroutineScope()
     val settings = remember { SettingsManager(context) }
-    val secrets = remember { SecureSecrets(context) }
+    val secrets = remember { SecureSecrets.getInstance(context) }
+    
+    // Explicit UI states for text fields to ensure responsiveness
+    var deviceName by remember { mutableStateOf(settings.deviceName) }
+    var smbHost by remember { mutableStateOf(settings.smbHost) }
+    var smbShare by remember { mutableStateOf(settings.smbShare) }
+    var smbUser by remember { mutableStateOf(secrets.smbUsername) }
+    var smbPass by remember { mutableStateOf(secrets.smbPassword) }
+    var mqttHost by remember { mutableStateOf(settings.mqttHost) }
+    var mqttUser by remember { mutableStateOf(secrets.mqttUsername) }
+    var mqttPass by remember { mutableStateOf(secrets.mqttPassword) }
+
     var cameras by remember { mutableStateOf(emptyList<CameraInfo>()) }
     var smbTesting by remember { mutableStateOf(false) }
     var smbTestStatus by remember { mutableStateOf("") }
@@ -48,19 +63,31 @@ fun SettingsTab(onRequestIgnoreBatteryOptimizations: () -> Unit) {
     var smbUploadHour by remember { mutableIntStateOf(settings.smbUploadHour) }
     var smbUploadMinute by remember { mutableIntStateOf(settings.smbUploadMinute) }
     
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                scope.launch {
+                    cameras = withContext(Dispatchers.IO) { CameraRepository(context).list() }
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     val loadingStr = stringResource(R.string.loading)
     val errorStr = stringResource(R.string.upload_failed)
-
-    LaunchedEffect(Unit) { 
-        cameras = withContext(Dispatchers.IO) { CameraRepository(context).list() } 
-    }
 
     LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
             SectionHeader(stringResource(R.string.general), Icons.Default.Info)
             OutlinedTextField(
-                value = settings.deviceName,
-                onValueChange = { settings.deviceName = it },
+                value = deviceName,
+                onValueChange = { 
+                    deviceName = it
+                    settings.deviceName = it
+                },
                 label = { Text(stringResource(R.string.device_name)) },
                 modifier = Modifier.fillMaxWidth(),
                 leadingIcon = { Icon(Icons.Default.Label, null) }
@@ -125,10 +152,10 @@ fun SettingsTab(onRequestIgnoreBatteryOptimizations: () -> Unit) {
                         Text(stringResource(R.string.upload_daily_at, smbUploadHour, smbUploadMinute))
                     }
 
-                    OutlinedTextField(value = settings.smbHost, onValueChange = { settings.smbHost = it }, label = { Text(stringResource(R.string.server)) }, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = settings.smbShare, onValueChange = { settings.smbShare = it }, label = { Text(stringResource(R.string.share)) }, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = secrets.smbUsername, onValueChange = { secrets.smbUsername = it }, label = { Text(stringResource(R.string.user)) }, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = secrets.smbPassword, onValueChange = { secrets.smbPassword = it }, label = { Text(stringResource(R.string.password)) }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = smbHost, onValueChange = { smbHost = it; settings.smbHost = it }, label = { Text(stringResource(R.string.server)) }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = smbShare, onValueChange = { smbShare = it; settings.smbShare = it }, label = { Text(stringResource(R.string.share)) }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = smbUser, onValueChange = { smbUser = it; secrets.smbUsername = it }, label = { Text(stringResource(R.string.user)) }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = smbPass, onValueChange = { smbPass = it; secrets.smbPassword = it }, label = { Text(stringResource(R.string.password)) }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(stringResource(R.string.delete_after_upload), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
@@ -151,9 +178,21 @@ fun SettingsTab(onRequestIgnoreBatteryOptimizations: () -> Unit) {
                         onClick = {
                             smbTesting = true; smbTestStatus = loadingStr
                             scope.launch {
-                                val r = SmbUploader(context).testConnection()
-                                smbTestStatus = r.fold(onSuccess = { "OK: $it" }, onFailure = { errorStr })
-                                smbTesting = false
+                                try {
+                                    val r = SmbUploader(context).testConnection()
+                                    smbTestStatus = r.fold(
+                                        onSuccess = { "OK: $it" }, 
+                                        onFailure = { 
+                                            Log.e("Timelapse", "SMB Test failed", it)
+                                            it.message ?: it.javaClass.simpleName 
+                                        }
+                                    )
+                                } catch (t: Throwable) {
+                                    Log.e("Timelapse", "SMB Test crashed", t)
+                                    smbTestStatus = "Crash: ${t.message ?: t.javaClass.simpleName}"
+                                } finally {
+                                    smbTesting = false
+                                }
                             }
                         },
                         modifier = Modifier.fillMaxWidth()
@@ -167,9 +206,9 @@ fun SettingsTab(onRequestIgnoreBatteryOptimizations: () -> Unit) {
             SectionHeader(stringResource(R.string.mqtt_ha), Icons.Default.Wifi)
             ElevatedCard {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedTextField(value = settings.mqttHost, onValueChange = { settings.mqttHost = it }, label = { Text(stringResource(R.string.server)) }, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = secrets.mqttUsername, onValueChange = { secrets.mqttUsername = it }, label = { Text(stringResource(R.string.username)) }, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = secrets.mqttPassword, onValueChange = { secrets.mqttPassword = it }, label = { Text(stringResource(R.string.password)) }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = mqttHost, onValueChange = { mqttHost = it; settings.mqttHost = it }, label = { Text(stringResource(R.string.server)) }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = mqttUser, onValueChange = { mqttUser = it; secrets.mqttUsername = it }, label = { Text(stringResource(R.string.username)) }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = mqttPass, onValueChange = { mqttPass = it; secrets.mqttPassword = it }, label = { Text(stringResource(R.string.password)) }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
 
                     Button(
                         enabled = !discoveryTesting,
@@ -180,9 +219,11 @@ fun SettingsTab(onRequestIgnoreBatteryOptimizations: () -> Unit) {
                                     withContext(Dispatchers.IO) { MqttClientManager(context).connectAndDiscover() }
                                     discoveryStatus = "OK" 
                                 } catch (e: Exception) { 
-                                    discoveryStatus = errorStr 
+                                    Log.e("Timelapse", "MQTT Discovery failed", e)
+                                    discoveryStatus = e.message ?: errorStr 
+                                } finally {
+                                    discoveryTesting = false
                                 }
-                                discoveryTesting = false
                             }
                         },
                         modifier = Modifier.fillMaxWidth()

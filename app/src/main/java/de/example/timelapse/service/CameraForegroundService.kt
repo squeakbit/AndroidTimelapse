@@ -16,6 +16,7 @@ import de.example.timelapse.mqtt.MqttDiscovery
 import de.example.timelapse.smb.SmbUploader
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
+import java.time.Instant
 import java.util.Calendar
 
 /**
@@ -106,6 +107,24 @@ class CameraForegroundService : Service() {
             try {
                 while (isActive) {
                     val s = SettingsManager(this@CameraForegroundService)
+                    
+                    // Check for manual upload request from HA/MQTT or UI
+                    if (s.manualUploadRequested) {
+                        try {
+                            val mqtt = MqttClientManager(this@CameraForegroundService)
+                            val result = SmbUploader(this@CameraForegroundService).uploadPendingPhotos()
+                            if (result.uploaded > 0) {
+                                mqtt.publish("timelapse/${s.deviceId}/last_upload", Instant.now().toString())
+                            }
+                            s.manualUploadRequested = false
+                            mqtt.publish("timelapse/${s.deviceId}/upload/state", "OFF")
+                            MqttDiscovery(mqtt, s, this@CameraForegroundService).publishState()
+                            mqtt.close()
+                        } catch (t: Throwable) {
+                            Log.e("Timelapse", "Immediate manual upload failed", t)
+                        }
+                    }
+
                     if (!s.timelapseEnabled) {
                         WakeLockHolder.release()
                         // Wait indefinitely until nudged via PrefListener
@@ -182,19 +201,8 @@ class CameraForegroundService : Service() {
                 if (failures.isNotEmpty()) {
                     mqtt.publish("timelapse/${s.deviceId}/last_error", "Aufnahme fehlgeschlagen: " + failures.joinToString("; "))
                 }
-                MqttDiscovery(mqtt, s, this).publishState()
                 
-                // If MQTT check or previous logic set this to true, run upload now.
-                if (s.manualUploadRequested) {
-                    try {
-                        SmbUploader(this).uploadPendingPhotos()
-                    } catch (t: Throwable) {
-                        Log.e("Timelapse", "Manual upload failed", t)
-                    } finally {
-                        s.manualUploadRequested = false
-                        mqtt.publish("timelapse/${s.deviceId}/upload/state", "OFF")
-                    }
-                }
+                MqttDiscovery(mqtt, s, this).publishState()
                 mqtt.close()
             } catch (t: Throwable) {
                 Log.w("Timelapse", "mqtt state publish failed", t)

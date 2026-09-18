@@ -58,9 +58,6 @@ class MainActivity : ComponentActivity() {
         var tab by remember { mutableIntStateOf(0) }
         var liveEnabled by remember { mutableStateOf(false) }
         var showGhost by remember { mutableStateOf(false) }
-        var testModeEnabled by remember { mutableStateOf(false) }
-        LaunchedEffect(liveEnabled) { if (liveEnabled) testModeEnabled = false }
-        LaunchedEffect(testModeEnabled) { if (testModeEnabled) liveEnabled = false }
         
         // Auto-disable Live View and Ghost when leaving the Camera tab (tab 1)
         LaunchedEffect(tab) {
@@ -75,7 +72,6 @@ class MainActivity : ComponentActivity() {
             val observer = LifecycleEventObserver { _, event ->
                 if (event == Lifecycle.Event.ON_PAUSE) {
                     liveEnabled = false
-                    testModeEnabled = false
                 }
             }
             lifecycleOwner.lifecycle.addObserver(observer)
@@ -101,8 +97,6 @@ class MainActivity : ComponentActivity() {
                 }
                 when (tab) {
                     0 -> HomeTab(
-                        testModeEnabled = testModeEnabled,
-                        onTestModeChange = { testModeEnabled = it },
                         onEnsureCameraServiceRunning = { CameraForegroundService.ensureServiceRunning(this@MainActivity) }
                     )
                     1 -> CameraTab(

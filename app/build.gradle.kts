@@ -34,6 +34,22 @@ android {
     buildFeatures {
         compose = true
     }
+    buildTypes {
+        release {
+            // Verwendet das Standard-Debug-Zertifikat, damit die Release-APK 
+            // ohne manuelles Signieren per ADB installiert werden kann.
+            signingConfig = signingConfigs.getByName("debug")
+            
+            // Aktiviert R8 Code-Minifizierung und -Optimierung
+            isMinifyEnabled = true
+            // Entfernt ungenutzte Ressourcen aus der APK
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+    }
     packaging {
         resources {
             excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
