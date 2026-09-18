@@ -1,0 +1,85 @@
+<resources>
+    <string name="app_name">Android Timelapse</string>
+    <string name="tab_start">Start</string>
+    <string name="tab_camera">Kamera</string>
+    <string name="tab_setup">Setup</string>
+
+    <!-- Home Tab -->
+    <string name="timelapse_mode">Timelapse Modus</string>
+    <string name="active_every">Aktiv • Alle %1$s Min.</string>
+    <string name="disabled">Deaktiviert</string>
+    <string name="time_control">Zeitsteuerung</string>
+    <string name="interval_minutes">Intervall (Minuten)</string>
+    <string name="active_cameras">Aktive Kameras</string>
+    <string name="all">Alle</string>
+    <string name="none">Keine</string>
+    <string name="manual_actions">Manuelle Aktionen</string>
+    <string name="upload_now">Jetzt hochladen</string>
+    <string name="uploading">Lade hoch …</string>
+    <string name="upload_success">Erfolgreich: %1$d</string>
+    <string name="upload_failed">Fehler</string>
+    <string name="test_mode">Testmodus</string>
+    <string name="short_term_test">Kurzzeit-Testlauf</string>
+    <string name="next_test_photo_in">Nächstes Testfoto in %1$ds …</string>
+    <string name="taking_test_photos">Nehme Testfoto(s) auf …</string>
+    <string name="test_photo_outcome">Foto #%1$d: %2$s</string>
+    <string name="test_limit_reached"> — Limit erreicht.</string>
+    <string name="no_camera_available">Keine Kamera verfügbar</string>
+    <string name="progress">Fortschritt: %1$d / %2$d</string>
+
+    <!-- Camera Tab -->
+    <string name="camera_ready">Kamera bereit</string>
+    <string name="last_photo">Letztes Foto</string>
+    <string name="refresh_preview">Vorschau aktualisieren</string>
+    <string name="tools">Hilfsmittel</string>
+    <string name="show_grid">Raster einblenden</string>
+    <string name="ghost_mode">Ghost-Modus</string>
+    <string name="ghost_mode_normal">Normal</string>
+    <string name="ghost_mode_difference">Differenz</string>
+    <string name="ghost_mode_blink">Blinken</string>
+    <string name="ghost_mode_edges">Kanten</string>
+    <string name="difference_mode_requirement">Differenz-Modus benötigt Android 10+</string>
+    <string name="auto_oscillation">Automatisches Pendeln</string>
+    <string name="oscillation_range">Pendel-Bereich: %1$d%% – %2$d%%</string>
+    <string name="reload_photo">Foto neu laden</string>
+    <string name="select_camera">Kamera wählen</string>
+    <string name="loading_photo">Lade Foto …</string>
+    <string name="load_failed_ghost">Referenzfoto konnte nicht geladen werden (fehlende Berechtigung?)</string>
+    <string name="no_reference_photo">Kein Referenzfoto für diese Kamera vorhanden</string>
+
+    <!-- Settings Tab -->
+    <string name="general">Allgemein</string>
+    <string name="device_name">Gerätename</string>
+    <string name="language">Sprache</string>
+    <string name="standard_resolution">Standard-Auflösung</string>
+    <string name="image_size">Bildgröße</string>
+    <string name="loading">Lade...</string>
+    <string name="smb_cloud">SMB Cloud</string>
+    <string name="auto_upload">Autoupload</string>
+    <string name="upload_daily_at">Upload täglich um %1$02d:%2$02d</string>
+    <string name="server">Server</string>
+    <string name="share">Share</string>
+    <string name="user">User</string>
+    <string name="password">Passwort</string>
+    <string name="delete_after_upload">Bilder nach Upload löschen</string>
+    <string name="delete_hint">Das aktuellste Referenzfoto pro Kamera bleibt als \'Ghost\' erhalten.</string>
+    <string name="test_smb">SMB Testen</string>
+    <string name="mqtt_ha">MQTT / HA</string>
+    <string name="username">Benutzername</string>
+    <string name="send_discovery">Discovery Senden</string>
+    <string name="system">System</string>
+    <string name="battery_opt_off">Akku-Optimierung: AUS</string>
+    <string name="disable_optimization">Optimierung deaktivieren!</string>
+
+    <!-- UI Utils & Labels -->
+    <string name="facing_front">Front</string>
+    <string name="facing_back">Back</string>
+    <string name="facing_external">External</string>
+    <string name="facing_unknown">Unbekannt</string>
+    <string name="resolution">Auflösung</string>
+    <string name="standard_label">Standard (%1$s)</string>
+    <string name="live">LIVE</string>
+    <string name="ghost">GHOST</string>
+    <string name="id_label">ID: %1$s</string>
+    <string name="camera_label">Kamera %1$s</string>
+</resources>
