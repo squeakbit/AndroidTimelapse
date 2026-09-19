@@ -1,5 +1,6 @@
 package de.example.timelapse.ui
 
+import android.app.TimePickerDialog
 import android.content.Intent
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -48,6 +49,11 @@ fun HomeTab(
     val settings = remember { SettingsManager(context) }
     var enabled by remember { mutableStateOf(settings.timelapseEnabled) }
     var interval by remember { mutableStateOf(settings.captureIntervalMinutes.toString()) }
+    var timeWindowEnabled by remember { mutableStateOf(settings.timeWindowEnabled) }
+    var startHour by remember { mutableIntStateOf(settings.windowStartHour) }
+    var startMinute by remember { mutableIntStateOf(settings.windowStartMinute) }
+    var endHour by remember { mutableIntStateOf(settings.windowEndHour) }
+    var endMinute by remember { mutableIntStateOf(settings.windowEndMinute) }
     var cameras by remember { mutableStateOf(emptyList<CameraInfo>()) }
     var selectedIds by remember { mutableStateOf(settings.selectedCameraIds) }
     var uploadStatus by remember { mutableStateOf("") }
@@ -89,7 +95,13 @@ fun HomeTab(
                     Spacer(Modifier.width(16.dp))
                     Column(Modifier.weight(1f)) {
                         Text(stringResource(R.string.timelapse_mode), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                        Text(if (enabled) stringResource(R.string.active_every, interval) else stringResource(R.string.disabled), style = MaterialTheme.typography.bodyMedium)
+                        val statusText = if (enabled) {
+                            val base = stringResource(R.string.active_every, interval)
+                            if (timeWindowEnabled) {
+                                "$base\n" + stringResource(R.string.active_between, startHour, startMinute, endHour, endMinute)
+                            } else base
+                        } else stringResource(R.string.disabled)
+                        Text(statusText, style = MaterialTheme.typography.bodyMedium)
                     }
                     Switch(
                         checked = enabled,
@@ -128,6 +140,62 @@ fun HomeTab(
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 modifier = Modifier.fillMaxWidth()
             )
+        }
+
+        item {
+            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.DateRange, null)
+                        Spacer(Modifier.width(12.dp))
+                        Text(stringResource(R.string.time_window), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                        Switch(
+                            checked = timeWindowEnabled,
+                            onCheckedChange = {
+                                timeWindowEnabled = it
+                                settings.timeWindowEnabled = it
+                                AlarmScheduler(context).scheduleAll()
+                            }
+                        )
+                    }
+
+                    if (timeWindowEnabled) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = {
+                                    TimePickerDialog(context, { _, h, m ->
+                                        startHour = h; startMinute = m
+                                        settings.windowStartHour = h; settings.windowStartMinute = m
+                                        AlarmScheduler(context).scheduleNextCapture()
+                                    }, startHour, startMinute, true).show()
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(stringResource(R.string.start_time), style = MaterialTheme.typography.labelSmall)
+                                    Text("%02d:%02d".format(startHour, startMinute), style = MaterialTheme.typography.titleMedium)
+                                }
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    TimePickerDialog(context, { _, h, m ->
+                                        endHour = h; endMinute = m
+                                        settings.windowEndHour = h; settings.windowEndMinute = m
+                                        AlarmScheduler(context).scheduleNextCapture()
+                                    }, endHour, endMinute, true).show()
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(stringResource(R.string.end_time), style = MaterialTheme.typography.labelSmall)
+                                    Text("%02d:%02d".format(endHour, endMinute), style = MaterialTheme.typography.titleMedium)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         item {

@@ -53,7 +53,9 @@ class CameraForegroundService : Service() {
     private val nudgeChannel = Channel<Unit>(Channel.CONFLATED)
 
     private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        if (key == "timelapse_enabled" || key == "capture_interval_minutes" || key == "manual_upload_requested") {
+        if (key == "timelapse_enabled" || key == "capture_interval_minutes" || key == "manual_upload_requested" ||
+            key == "time_window_enabled" || key == "window_start_hour" || key == "window_start_minute" ||
+            key == "window_end_hour" || key == "window_end_minute") {
             nudgeChannel.trySend(Unit)
         }
     }
