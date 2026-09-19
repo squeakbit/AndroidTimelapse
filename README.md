@@ -16,6 +16,7 @@ A robust Android application for automated long-term timelapse photography. It f
 - **MQTT Monitoring:** Real-time status updates using MQTT v5 (Eclipse Paho 1.2.5) with Home Assistant MQTT Discovery support.
 - **Device Stats:** Reporting of battery level, charging status, and capture/upload statistics.
 - **Automated Scheduling:** Daily SMB uploads and status updates with every capture.
+- **Time Window:** Restrict captures to specific hours of the day (e.g., only during daylight or business hours).
 - **Security:** Android Keystore integration via `EncryptedSharedPreferences` for MQTT and SMB credentials.
 - **Persistence:** AlarmManager with Exact-Alarm fallback and Boot/Package recovery.
 - **Background Operations:** Dedicated Foreground Services for camera capture and data synchronization.
@@ -32,6 +33,9 @@ Camera Foreground Service (FGS) permissions are restricted for background starts
 #### Build Requirements
 The project is pinned to **JDK 17** for the toolchain. While modern Android Studio versions may run on newer JDKs, this project uses JVM target 17 for stability and compatibility.
 
+### License
+This project is licensed under the **GNU General Public License v3.0**. See the [LICENSE](file:///C:/Users/Jellyfin/StudioProjects/Timelapper/LICENSE) file for details.
+
 ---
 
 <a name="deutsch"></a>
@@ -46,6 +50,7 @@ Eine robuste Android-App für automatisierte Langzeit-Zeitrafferaufnahmen. Sie b
 - **MQTT-Monitoring:** Status-Updates über MQTT v5 (Eclipse Paho 1.2.5) inklusive Home Assistant MQTT Discovery.
 - **Gerätestatistiken:** Übertragung von Akkustand, Ladestatus und Foto-/Uploadstatistiken.
 - **Automatisierung:** Täglicher SMB-Upload und Status-Updates bei jeder Aufnahme.
+- **Zeitfenster:** Begrenzung der Aufnahmen auf bestimmte Tageszeiten (z. B. nur tagsüber oder während der Geschäftszeiten).
 - **Sicherheit:** Android Keystore über `EncryptedSharedPreferences` für MQTT- und SMB-Passwörter.
 - **Zuverlässigkeit:** AlarmManager mit Exact-Alarm-Fallback und Boot-/Package-Recovery.
 - **Hintergrunddienste:** Getrennte Foreground Services für Kamera und Datensynchronisation.
@@ -61,3 +66,6 @@ Die Kamera-FGS-Berechtigung ist im Hintergrund eingeschränkt. Nach einem Reboot
 
 #### Build-Hinweise
 Das Projekt ist auf **JDK 17** fixiert. Dies ist beabsichtigt, um eine stabile Kompilierung sicherzustellen, auch wenn das Build-System auf neueren JDK-Versionen läuft.
+
+### Lizenz
+Dieses Projekt steht unter der **GNU General Public License v3.0**. Weitere Details finden Sie in der [LICENSE](file:///C:/Users/Jellyfin/StudioProjects/Timelapper/LICENSE)-Datei.
