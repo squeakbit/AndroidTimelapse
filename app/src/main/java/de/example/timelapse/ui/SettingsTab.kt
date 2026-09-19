@@ -1,6 +1,8 @@
 package de.example.timelapse.ui
 
+import android.app.AlarmManager
 import android.app.TimePickerDialog
+import android.os.Build
 import android.os.PowerManager
 import android.util.Log
 import androidx.compose.foundation.layout.*
@@ -36,7 +38,10 @@ import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsTab(onRequestIgnoreBatteryOptimizations: () -> Unit) {
+fun SettingsTab(
+    onRequestIgnoreBatteryOptimizations: () -> Unit,
+    onRequestExactAlarmPermission: () -> Unit
+) {
     val context = LocalContext.current.applicationContext
     val scope = rememberCoroutineScope()
     val settings = remember { SettingsManager(context) }
@@ -64,12 +69,25 @@ fun SettingsTab(onRequestIgnoreBatteryOptimizations: () -> Unit) {
     var smbUploadHour by remember { mutableIntStateOf(settings.smbUploadHour) }
     var smbUploadMinute by remember { mutableIntStateOf(settings.smbUploadMinute) }
 
+    var exactAlarmAllowed by remember {
+        mutableStateOf(
+            if (Build.VERSION.SDK_INT >= 31) {
+                context.getSystemService(AlarmManager::class.java).canScheduleExactAlarms()
+            } else {
+                true
+            }
+        )
+    }
+
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 scope.launch {
                     cameras = withContext(Dispatchers.IO) { CameraRepository(context).list() }
+                }
+                if (Build.VERSION.SDK_INT >= 31) {
+                    exactAlarmAllowed = context.getSystemService(AlarmManager::class.java).canScheduleExactAlarms()
                 }
             }
         }
@@ -251,6 +269,20 @@ fun SettingsTab(onRequestIgnoreBatteryOptimizations: () -> Unit) {
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(if (ignoringOpt.value) stringResource(R.string.battery_opt_off) else stringResource(R.string.disable_optimization), color = if (ignoringOpt.value) MaterialTheme.colorScheme.onSurfaceVariant else Color.White)
+            }
+
+            if (Build.VERSION.SDK_INT >= 31) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Button(
+                    onClick = { onRequestExactAlarmPermission() },
+                    colors = ButtonDefaults.buttonColors(containerColor = if (exactAlarmAllowed) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.error),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        if (exactAlarmAllowed) stringResource(R.string.exact_alarm_on) else stringResource(R.string.exact_alarm_off),
+                        color = if (exactAlarmAllowed) MaterialTheme.colorScheme.onSurfaceVariant else Color.White
+                    )
+                }
             }
         }
     }

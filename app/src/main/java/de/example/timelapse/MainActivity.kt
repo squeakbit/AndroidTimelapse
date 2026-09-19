@@ -105,7 +105,10 @@ class MainActivity : ComponentActivity() {
                         showGhost = showGhost,
                         onShowGhostChange = { showGhost = it }
                     )
-                    else -> SettingsTab(onRequestIgnoreBatteryOptimizations = { requestIgnoreBatteryOptimizations() })
+                    else -> SettingsTab(
+                        onRequestIgnoreBatteryOptimizations = { requestIgnoreBatteryOptimizations() },
+                        onRequestExactAlarmPermission = { requestExactAlarmPermission() }
+                    )
                 }
             }
         }
@@ -116,5 +119,14 @@ class MainActivity : ComponentActivity() {
             data = Uri.parse("package:$packageName")
         }
         startActivity(intent)
+    }
+
+    private fun requestExactAlarmPermission() {
+        if (Build.VERSION.SDK_INT >= 31) {
+            val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+                data = Uri.parse("package:$packageName")
+            }
+            startActivity(intent)
+        }
     }
 }

@@ -26,14 +26,16 @@
                     catch (t: Throwable) { Log.w("Timelapse", "failed to start upload sync service", t); WakeLockHolder.release() }
                 }
                 AlarmScheduler.CAPTURE -> {
-                    // The capture nudge alarm just needs to wake the CPU so the
-                    // CameraForegroundService's loop (which is already running)
-                    // can resume from delay(). We also send an explicit START
-                    // intent to be sure the service is alive and knows it's
-                    // time to check its loop.
-                    val x = Intent(c, CameraForegroundService::class.java).setAction(CameraForegroundService.ACTION_START)
-                    try { ContextCompat.startForegroundService(c, x) }
-                    catch (t: Throwable) { Log.w("Timelapse", "failed to nudge camera service", t); WakeLockHolder.release() }
+                    // If the service is already running, we can directly nudge its coroutine loop
+                    // without calling startForegroundService from the background, avoiding
+                    // Android 14+ / 15 / 16 background start restrictions for camera services.
+                    if (CameraForegroundService.isServiceRunning()) {
+                        CameraForegroundService.nudge()
+                    } else {
+                        val x = Intent(c, CameraForegroundService::class.java).setAction(CameraForegroundService.ACTION_START)
+                        try { ContextCompat.startForegroundService(c, x) }
+                        catch (t: Throwable) { Log.w("Timelapse", "failed to nudge camera service", t); WakeLockHolder.release() }
+                    }
                 }
                 else -> WakeLockHolder.release()
             }

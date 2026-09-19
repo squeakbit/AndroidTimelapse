@@ -68,6 +68,8 @@
     <string name="system">System</string>
     <string name="battery_opt_off">Battery Optimization: OFF</string>
     <string name="disable_optimization">Disable Optimization!</string>
+    <string name="exact_alarm_on">Exact Alarms: ON</string>
+    <string name="exact_alarm_off">Allow Exact Alarms!</string>
 
     <!-- UI Utils & Labels -->
     <string name="facing_front">Front</string>

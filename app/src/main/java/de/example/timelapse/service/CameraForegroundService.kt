@@ -31,6 +31,15 @@ class CameraForegroundService : Service() {
         
         private const val MAX_SINGLE_SLEEP_MS = 5 * 60_000L
 
+        @Volatile
+        private var instance: CameraForegroundService? = null
+
+        fun isServiceRunning(): Boolean = instance != null
+
+        fun nudge() {
+            instance?.nudgeChannel?.trySend(Unit)
+        }
+
         /**
          * Standard helper to ensure the service is running, respecting
          * background start restrictions by only attempting it when likely
@@ -68,6 +77,7 @@ class CameraForegroundService : Service() {
             stopSelf()
             return
         }
+        instance = this
         createChannel()
         if (Build.VERSION.SDK_INT >= 29) {
             startForeground(10, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
@@ -246,6 +256,9 @@ class CameraForegroundService : Service() {
         .build()
 
     override fun onDestroy() {
+        if (instance == this) {
+            instance = null
+        }
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
         prefs.unregisterOnSharedPreferenceChangeListener(prefListener)
         loopJob?.cancel()
