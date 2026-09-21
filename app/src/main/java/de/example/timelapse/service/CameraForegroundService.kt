@@ -46,7 +46,8 @@ class CameraForegroundService : Service() {
          * in the foreground.
          */
         fun ensureServiceRunning(context: Context) {
-            if (!SettingsManager(context).timelapseEnabled) return
+            val s = SettingsManager(context)
+            if (!s.timelapseEnabled && s.mqttHost.isBlank()) return
             try {
                 val intent = Intent(context, CameraForegroundService::class.java).setAction(ACTION_START)
                 ContextCompat.startForegroundService(context, intent)
@@ -117,10 +118,24 @@ class CameraForegroundService : Service() {
             }
             else -> {
                 startLoopIfNeeded()
+                startMqttListenerIfNeeded()
                 nudgeChannel.trySend(Unit)
             }
         }
         return START_STICKY
+    }
+
+    private var mqttJob: Job? = null
+    private fun startMqttListenerIfNeeded() {
+        if (mqttJob?.isActive == true) return
+        mqttJob = scope.launch {
+            while (isActive) {
+                try {
+                    MqttClientManager(this@CameraForegroundService).handleMqttCommands()
+                } catch (_: Throwable) {}
+                delay(30_000) // Keep-alive/reconnect check
+            }
+        }
     }
 
     private fun startLoopIfNeeded() {
@@ -133,12 +148,11 @@ class CameraForegroundService : Service() {
                 while (isActive) {
                     val s = SettingsManager(this@CameraForegroundService)
                     
-                    // Check for MQTT commands and manual upload request
-                    try {
-                        val mqtt = MqttClientManager(this@CameraForegroundService)
-                        mqtt.handleMqttCommands()
-                        
-                        if (s.manualUploadRequested) {
+                    // Manual upload is now handled in startMqttListenerIfNeeded via callback,
+                    // but we still check it here in the loop just in case.
+                    if (s.manualUploadRequested) {
+                        try {
+                            val mqtt = MqttClientManager(this@CameraForegroundService)
                             val result = SmbUploader(this@CameraForegroundService).uploadPendingPhotos()
                             if (result.uploaded > 0) {
                                 mqtt.publish("timelapse/${s.deviceId}/last_upload", Instant.now().toString())
@@ -146,18 +160,15 @@ class CameraForegroundService : Service() {
                             s.manualUploadRequested = false
                             mqtt.publish("timelapse/${s.deviceId}/upload/state", "OFF")
                             MqttDiscovery(mqtt, s, this@CameraForegroundService).publishState()
+                        } catch (t: Throwable) {
+                            Log.e("Timelapse", "Loop manual upload failed", t)
                         }
-                        mqtt.close()
-                    } catch (t: Throwable) {
-                        Log.e("Timelapse", "MQTT command check or manual upload failed", t)
                     }
 
                     if (!s.timelapseEnabled) {
                         WakeLockHolder.release()
-                        // Wait for nudge or timeout to check MQTT again even when disabled
-                        withTimeoutOrNull(MAX_SINGLE_SLEEP_MS) {
-                            nudgeChannel.receive()
-                        }
+                        // Wait indefinitely until nudged via PrefListener
+                        nudgeChannel.receive()
                         continue
                     }
                     
@@ -305,7 +316,10 @@ class CameraForegroundService : Service() {
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
         prefs.unregisterOnSharedPreferenceChangeListener(prefListener)
         loopJob?.cancel()
-        scope.cancel()
+        scope.launch {
+            try { MqttClientManager(this@CameraForegroundService).close() } catch (_: Throwable) {}
+            scope.cancel()
+        }
         super.onDestroy()
     }
 

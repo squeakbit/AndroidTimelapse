@@ -23,6 +23,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import android.content.Context
+import android.content.SharedPreferences
 import de.example.timelapse.AlarmScheduler
 import de.example.timelapse.R
 import de.example.timelapse.SettingsManager
@@ -59,10 +61,39 @@ fun HomeTab(
     var uploadStatus by remember { mutableStateOf("") }
     var uploading by remember { mutableStateOf(false) }
 
+    // Live-sync UI with settings (e.g. when changed via MQTT)
+    DisposableEffect(context) {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            when (key) {
+                "timelapse_enabled" -> enabled = settings.timelapseEnabled
+                "capture_interval_minutes" -> interval = settings.captureIntervalMinutes.toString()
+                "time_window_enabled" -> timeWindowEnabled = settings.timeWindowEnabled
+                "window_start_hour" -> startHour = settings.windowStartHour
+                "window_start_minute" -> startMinute = settings.windowStartMinute
+                "window_end_hour" -> endHour = settings.windowEndHour
+                "window_end_minute" -> endMinute = settings.windowEndMinute
+                "selected_camera_ids" -> selectedIds = settings.selectedCameraIds
+            }
+        }
+        val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
+                // Refresh all states on resume
+                enabled = settings.timelapseEnabled
+                interval = settings.captureIntervalMinutes.toString()
+                timeWindowEnabled = settings.timeWindowEnabled
+                startHour = settings.windowStartHour
+                startMinute = settings.windowStartMinute
+                endHour = settings.windowEndHour
+                endMinute = settings.windowEndMinute
+                selectedIds = settings.selectedCameraIds
+                
                 scope.launch {
                     cameras = withContext(Dispatchers.IO) { CameraRepository(context).list() }
                     if (selectedIds.isEmpty() && cameras.isNotEmpty()) {
@@ -116,7 +147,12 @@ fun HomeTab(
                                     try { withContext(Dispatchers.IO) { MqttClientManager(context).connectAndDiscover() } } catch (_: Exception) { }
                                 }
                             } else {
-                                try { context.startService(Intent(context, CameraForegroundService::class.java).setAction(CameraForegroundService.ACTION_STOP)) } catch (_: Throwable) { }
+                                if (settings.mqttHost.isBlank()) {
+                                    try { context.startService(Intent(context, CameraForegroundService::class.java).setAction(CameraForegroundService.ACTION_STOP)) } catch (_: Throwable) { }
+                                } else {
+                                    // Just nudge to let the loop enter "wait" state and sync MQTT
+                                    CameraForegroundService.nudge()
+                                }
                             }
                         }
                     )
