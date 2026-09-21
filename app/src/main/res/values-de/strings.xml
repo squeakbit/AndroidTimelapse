@@ -39,6 +39,10 @@
     <string name="auto_oscillation">Automatisches Pendeln</string>
     <string name="oscillation_range">Pendel-Bereich: %1$d%% – %2$d%%</string>
     <string name="reload_photo">Foto neu laden</string>
+    <string name="change_reference">Referenz ändern</string>
+    <string name="select_reference_title">Referenzfoto wählen</string>
+    <string name="use_latest">Neuestes Foto verwenden</string>
+    <string name="pinned_indicator">Fixierte Referenz</string>
     <string name="select_camera">Kamera wählen</string>
     <string name="loading_photo">Lade Foto …</string>
     <string name="load_failed_ghost">Referenzfoto konnte nicht geladen werden (fehlende Berechtigung?)</string>

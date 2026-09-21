@@ -15,6 +15,11 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import android.net.Uri
+import de.example.timelapse.data.PhotoEntity
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -74,6 +79,10 @@ fun CameraTab(
     var ghostOscillationRange by remember { mutableStateOf(settings.ghostOscillationMin..settings.ghostOscillationMax) }
     var ghostPhotoState by remember { mutableStateOf<GhostPhotoState>(GhostPhotoState.Idle) }
 
+    var showGhostSelector by remember { mutableStateOf(false) }
+    var recentPhotos by remember { mutableStateOf(emptyList<PhotoEntity>()) }
+    var loadingRecent by remember { mutableStateOf(false) }
+
     // Use a VSync-synced metronome for stable animation on older Android versions.
     var metronomeNanos by remember { mutableLongStateOf(0L) }
     LaunchedEffect(ghostOscillationEnabled, ghostMode) {
@@ -102,6 +111,10 @@ fun CameraTab(
     val selectedCamera = cameras.firstOrNull { it.id == selectedCameraId }
     val selectedCameraLabel = selectedCamera?.let { PhotoCaptureHelper.cameraLabel(it) }
 
+    val pinnedId = remember(selectedCameraLabel, showGhostSelector) {
+        selectedCameraLabel?.let { settings.getPinnedGhostPhotoId(it) } ?: -1L
+    }
+
     val hasGhostPhoto = remember(selectedCameraLabel) { mutableStateOf(false) }
     LaunchedEffect(selectedCameraLabel) {
         val exists = hasReadableGhostPhoto(context, selectedCameraLabel)
@@ -109,6 +122,16 @@ fun CameraTab(
         // Only auto-disable if we are sure it's missing (cameras loaded but photo isn't there)
         if (!exists && cameras.isNotEmpty() && selectedCameraLabel != null) {
             onShowGhostChange(false)
+        }
+    }
+
+    LaunchedEffect(showGhostSelector, selectedCameraLabel) {
+        if (showGhostSelector && selectedCameraLabel != null) {
+            loadingRecent = true
+            recentPhotos = withContext(Dispatchers.IO) {
+                AppDatabase.getInstance(context).photoDao().getRecentPhotosByCameraLabel(selectedCameraLabel, 50)
+            }
+            loadingRecent = false
         }
     }
 
@@ -321,7 +344,7 @@ fun CameraTab(
                         shape = RoundedCornerShape(4.dp)
                     ) {
                         Text(
-                            stringResource(R.string.last_photo),
+                            if (pinnedId != -1L) stringResource(R.string.pinned_indicator) else stringResource(R.string.last_photo),
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                             color = Color.Yellow,
                             style = MaterialTheme.typography.labelSmall
@@ -510,6 +533,15 @@ fun CameraTab(
                         }
 
                         TextButton(
+                            onClick = { showGhostSelector = true },
+                            modifier = Modifier.align(Alignment.End)
+                        ) {
+                            Icon(Icons.Default.ImageSearch, null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(stringResource(R.string.change_reference))
+                        }
+
+                        TextButton(
                             onClick = { scope.launch { ghostPhotoState = GhostPhotoState.Loading; ghostPhotoState = loadGhostPhotoState(context, selectedCameraLabel) } },
                             modifier = Modifier.align(Alignment.End)
                         ) {
@@ -543,6 +575,121 @@ fun CameraTab(
                     Column {
                         Text(stringResource(R.string.camera_label, camera.id), fontWeight = FontWeight.Bold)
                         Text(facingLabel(context, camera.facing), style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
+    }
+
+    if (showGhostSelector) {
+        ModalBottomSheet(
+            onDismissRequest = { showGhostSelector = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.8f)
+                    .padding(horizontal = 16.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        stringResource(R.string.select_reference_title),
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                    IconButton(onClick = { showGhostSelector = false }) {
+                        Icon(Icons.Default.Close, null)
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                OutlinedButton(
+                    onClick = {
+                        selectedCameraLabel?.let { settings.setPinnedGhostPhotoId(it, -1L) }
+                        showGhostSelector = false
+                        scope.launch {
+                            ghostPhotoState = GhostPhotoState.Loading
+                            ghostPhotoState = loadGhostPhotoState(context, selectedCameraLabel)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = pinnedId != -1L
+                ) {
+                    Icon(Icons.Default.History, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(stringResource(R.string.use_latest))
+                }
+
+                Spacer(Modifier.height(16.dp))
+
+                if (loadingRecent) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                } else if (recentPhotos.isEmpty()) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(stringResource(R.string.no_reference_photo), color = Color.Gray)
+                    }
+                } else {
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(100.dp),
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(bottom = 32.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        items(recentPhotos, key = { it.id }) { photo ->
+                            val isPinned = photo.id == pinnedId
+                            Box(
+                                modifier = Modifier
+                                    .aspectRatio(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (isPinned) MaterialTheme.colorScheme.primary else Color.DarkGray)
+                                    .clickable {
+                                        selectedCameraLabel?.let { settings.setPinnedGhostPhotoId(it, photo.id) }
+                                        showGhostSelector = false
+                                        scope.launch {
+                                            ghostPhotoState = GhostPhotoState.Loading
+                                            ghostPhotoState = loadGhostPhotoState(context, selectedCameraLabel)
+                                        }
+                                    }
+                            ) {
+                                // Simple thumbnail loader using our existing helper
+                                var thumbnail by remember { mutableStateOf<Bitmap?>(null) }
+                                LaunchedEffect(photo.localPath) {
+                                    thumbnail = withContext(Dispatchers.IO) {
+                                        decodeOrientedBitmap(context, Uri.parse(photo.localPath), targetSize = 300)
+                                    }
+                                }
+
+                                if (thumbnail != null) {
+                                    Image(
+                                        bitmap = thumbnail!!.asImageBitmap(),
+                                        contentDescription = null,
+                                        modifier = Modifier.fillMaxSize().alpha(if (isPinned) 0.6f else 1f),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                } else {
+                                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                        Icon(Icons.Default.Image, null, tint = Color.Gray)
+                                    }
+                                }
+
+                                if (isPinned) {
+                                    Icon(
+                                        Icons.Default.PushPin,
+                                        null,
+                                        modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).size(16.dp),
+                                        tint = Color.White
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }

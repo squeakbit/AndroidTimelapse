@@ -37,9 +37,17 @@ sealed class GhostPhotoState {
 suspend fun loadGhostPhotoState(context: Context, cameraLabel: String?): GhostPhotoState =
     withContext(Dispatchers.IO) {
         if (cameraLabel == null) return@withContext GhostPhotoState.NoPhoto
+        val settings = SettingsManager(context)
+        val pinnedId = settings.getPinnedGhostPhotoId(cameraLabel)
+        val dao = AppDatabase.getInstance(context).photoDao()
+        
         try {
-            val photo = AppDatabase.getInstance(context).photoDao().getLastPhotoByCameraLabel(cameraLabel)
-                ?: return@withContext GhostPhotoState.NoPhoto
+            val photo = if (pinnedId != -1L) {
+                dao.getPhotoById(pinnedId) ?: dao.getLastPhotoByCameraLabel(cameraLabel)
+            } else {
+                dao.getLastPhotoByCameraLabel(cameraLabel)
+            } ?: return@withContext GhostPhotoState.NoPhoto
+            
             val bitmap = decodeOrientedBitmap(context, Uri.parse(photo.localPath))
             if (bitmap != null) {
                 val edgeBitmap = applySobelFilter(bitmap)
@@ -53,8 +61,16 @@ suspend fun loadGhostPhotoState(context: Context, cameraLabel: String?): GhostPh
 suspend fun hasReadableGhostPhoto(context: Context, cameraLabel: String?): Boolean =
     withContext(Dispatchers.IO) {
         if (cameraLabel == null) return@withContext false
-        val entry = AppDatabase.getInstance(context).photoDao().getLastPhotoByCameraLabel(cameraLabel)
-            ?: return@withContext false
+        val settings = SettingsManager(context)
+        val pinnedId = settings.getPinnedGhostPhotoId(cameraLabel)
+        val dao = AppDatabase.getInstance(context).photoDao()
+        
+        val entry = if (pinnedId != -1L) {
+            dao.getPhotoById(pinnedId) ?: dao.getLastPhotoByCameraLabel(cameraLabel)
+        } else {
+            dao.getLastPhotoByCameraLabel(cameraLabel)
+        } ?: return@withContext false
+        
         try {
             context.contentResolver.openInputStream(Uri.parse(entry.localPath))?.use { true } ?: false
         } catch (_: Throwable) {
@@ -111,7 +127,7 @@ fun decodeOrientedBitmap(path: String): Bitmap? {
     return rotateBitmapIfNeeded(bitmap, degrees)
 }
 
-fun decodeOrientedBitmap(context: Context, uri: Uri): Bitmap? {
+fun decodeOrientedBitmap(context: Context, uri: Uri, targetSize: Int = 1600): Bitmap? {
     val resolver = context.contentResolver
     val options = BitmapFactory.Options().apply {
         inJustDecodeBounds = true
@@ -122,7 +138,7 @@ fun decodeOrientedBitmap(context: Context, uri: Uri): Bitmap? {
         return null
     }
 
-    options.inSampleSize = calculateInSampleSize(options, 1600, 1600)
+    options.inSampleSize = calculateInSampleSize(options, targetSize, targetSize)
     options.inJustDecodeBounds = false
 
     val bitmap = try {

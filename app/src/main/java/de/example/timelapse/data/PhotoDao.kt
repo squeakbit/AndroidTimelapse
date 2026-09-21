@@ -17,6 +17,12 @@ import androidx.room.*
   */
  @Query("SELECT * FROM photos WHERE fileName LIKE :label || '\\_%' ESCAPE '\\' ORDER BY capturedAt DESC LIMIT 1")
  suspend fun getLastPhotoByCameraLabel(label:String):PhotoEntity?
+
+ @Query("SELECT * FROM photos WHERE fileName LIKE :label || '\\_%' ESCAPE '\\' ORDER BY capturedAt DESC LIMIT :limit")
+ suspend fun getRecentPhotosByCameraLabel(label: String, limit: Int): List<PhotoEntity>
+
+ @Query("SELECT * FROM photos WHERE id = :id")
+ suspend fun getPhotoById(id: Long): PhotoEntity?
  @Query("SELECT * FROM photos WHERE uploadedAt IS NOT NULL")
  suspend fun getAllUploadedPhotos():List<PhotoEntity>
  @Update suspend fun update(photo:PhotoEntity)

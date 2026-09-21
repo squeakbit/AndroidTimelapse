@@ -39,6 +39,10 @@
     <string name="auto_oscillation">Auto Oscillation</string>
     <string name="oscillation_range">Oscillation Range: %1$d%% – %2$d%%</string>
     <string name="reload_photo">Reload Photo</string>
+    <string name="change_reference">Change Reference</string>
+    <string name="select_reference_title">Select Reference Photo</string>
+    <string name="use_latest">Use Latest Photo</string>
+    <string name="pinned_indicator">Pinned Reference</string>
     <string name="select_camera">Select Camera</string>
     <string name="loading_photo">Loading photo …</string>
     <string name="load_failed_ghost">Reference photo could not be loaded (missing permission?)</string>

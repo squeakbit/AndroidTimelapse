@@ -28,6 +28,8 @@ class SettingsManager(context: Context) {
     var lastPreviewCameraId: String
         get() = p.getString("last_preview_camera_id", "") ?: ""
         set(v) = p.edit().putString("last_preview_camera_id", v).apply()
+    fun getPinnedGhostPhotoId(cameraLabel: String): Long = p.getLong("pinned_ghost_$cameraLabel", -1L)
+    fun setPinnedGhostPhotoId(cameraLabel: String, id: Long) = p.edit().putLong("pinned_ghost_$cameraLabel", id).apply()
     var showGrid: Boolean
         get() = p.getBoolean("show_grid", true)
         set(v) = p.edit().putBoolean("show_grid", v).apply()
