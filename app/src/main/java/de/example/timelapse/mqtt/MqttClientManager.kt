@@ -131,6 +131,7 @@ class MqttClientManager(private val context:Context){
    val c=MqttAsyncClient(uri,settings.mqttClientId, null)
    val o=MqttConnectionOptions().apply{
     isCleanStart=true; isAutomaticReconnect=false
+    keepAliveInterval = 600 // 10 minutes for home Wi-Fi usage
     val secrets = SecureSecrets.getInstance(context)
     userName=secrets.mqttUsername.ifBlank{settings.mqttUsername}
     password=secrets.mqttPassword.ifBlank{settings.mqttPassword}.toByteArray()
