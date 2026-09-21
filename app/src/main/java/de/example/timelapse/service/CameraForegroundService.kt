@@ -145,7 +145,10 @@ class CameraForegroundService : Service() {
                     }
                     
                     val waitMs = msUntilNextCapture(s)
-                    if (waitMs <= 5000L) { // 5s grace period
+                    if (waitMs <= 15000L) { // 15s grace period
+                        if (waitMs > 0L) {
+                            delay(waitMs)
+                        }
                         if (!serviceLock.isHeld) serviceLock.acquire(3 * 60_000L)
                         try {
                             capture(s)

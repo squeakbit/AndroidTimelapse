@@ -6,9 +6,12 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -38,6 +41,14 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
+        if (Build.VERSION.SDK_INT >= 27) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
+        }
+
         cameraPermission.launch(Manifest.permission.CAMERA)
         if (Build.VERSION.SDK_INT >= 33) {
             mediaPermission.launch(arrayOf(Manifest.permission.READ_MEDIA_IMAGES))
@@ -45,6 +56,21 @@ class MainActivity : ComponentActivity() {
             storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }
         setContent { TimelapseTheme { AppRoot() } }
+        handleWakeupIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleWakeupIntent(intent)
+    }
+
+    private fun handleWakeupIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra("EXTRA_ALARM_CAPTURE", false) == true) {
+            Handler(Looper.getMainLooper()).postDelayed({
+                try { moveTaskToBack(true) } catch (_: Throwable) {}
+            }, 8000)
+        }
     }
 
     override fun onResume() {
