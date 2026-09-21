@@ -13,8 +13,9 @@ A robust Android application for automated long-term timelapse photography. It f
 - **Camera2 API:** High-resolution JPEG capture with selectable cameras, resolutions, and quality settings.
 - **Reliable Storage:** Room-based queue for managing photos and upload status.
 - **SMB Synchronization:** Secure upload using SMB2/SMB3 (smbj 0.13.0).
-- **MQTT Remote Control:** Full remote control via MQTT (Start/Stop, Time Window toggle, Start/End time configuration, and Manual Upload trigger) with Home Assistant MQTT Discovery support.
+- **MQTT Remote Control:** Full remote control via MQTT (Start/Stop, Time Window toggle, Start/End time configuration, and Manual Upload trigger) with Home Assistant MQTT Discovery support. Features real-time UI synchronization and per-photo status updates.
 - **Android 16 Optimization:** Integrated "Foreground Service Bridge" to maintain connectivity and prevent process freezing during background operation on modern Android versions.
+- **Technical Robustness:** Shared, thread-safe MQTT client architecture with automatic reconnect and persistent sessions to survive brief network drops.
 - **Time Window:** Restrict captures to specific hours (e.g., only during daylight), configurable both in-app and via MQTT.
 - **Energy Efficiency:** Optimized for Wi-Fi environments with a 10-minute MQTT keep-alive to maximize battery life while maintaining instant responsiveness.
 - **Security:** Android Keystore integration via `EncryptedSharedPreferences` for MQTT and SMB credentials.
@@ -50,8 +51,9 @@ Eine robuste Android-App für automatisierte Langzeit-Zeitrafferaufnahmen. Sie b
 - **Camera2 API:** JPEG-Aufnahme mit frei wählbarer Kamera, Auflösung und JPEG-Qualität.
 - **Sichere Warteschlange:** Room-Datenbank für Fotos und Uploadstatus.
 - **SMB-Upload:** Sicherer Upload über SMB2/SMB3 (smbj 0.13.0).
-- **MQTT Fernsteuerung:** Vollständige Steuerung über MQTT (Start/Stop, Zeitfenster-Modus, Start-/Endzeit und manueller Upload) inklusive Home Assistant MQTT Discovery.
+- **MQTT Fernsteuerung:** Vollständige Steuerung über MQTT (Start/Stop, Zeitfenster-Modus, Start-/Endzeit und manueller Upload) inklusive Home Assistant MQTT Discovery. Bietet Echtzeit-Synchronisierung der App-Oberfläche und Status-Updates nach jedem Foto.
 - **Android 16 Optimierung:** Integrierter "Foreground Service Bridge"-Mechanismus, um die Erreichbarkeit zu garantieren und das Einfrieren des Prozesses im Hintergrund zu verhindern.
+- **Technische Stabilität:** Thread-sichere "Shared Client" MQTT-Architektur mit automatischem Wiederaufbau der Verbindung und persistenten Sitzungen.
 - **Zeitfenster:** Begrenzung der Aufnahmen auf bestimmte Tageszeiten, sowohl in der App als auch über MQTT konfigurierbar.
 - **Energieeffizienz:** Optimiert für WLAN-Umgebungen mit einem 10-minütigen MQTT-Keep-Alive, um die Akkulaufzeit bei maximaler Reaktionsschnelligkeit zu maximieren.
 - **Sicherheit:** Android Keystore über `EncryptedSharedPreferences` für MQTT- und SMB-Passwörter.
