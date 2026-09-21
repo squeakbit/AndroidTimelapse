@@ -5,6 +5,7 @@ import de.example.timelapse.SettingsManager
 import de.example.timelapse.data.AppDatabase
 import org.json.JSONObject
 import java.time.Instant
+import java.util.Locale
 
 class MqttDiscovery(private val mqtt: MqttClientManager, private val s: SettingsManager, private val context: Context) {
     private val base = "timelapse/${s.deviceId}"
@@ -23,8 +24,60 @@ class MqttDiscovery(private val mqtt: MqttClientManager, private val s: Settings
         sensor("last_upload", "Letzter Upload", "$base/last_upload", "mdi:cloud-upload-outline", "timestamp")
         sensor("last_upload_failed", "Letzter Upload Fehler", "$base/last_upload_failed", "mdi:alert-circle-outline", null)
         sensor("last_error", "Letzter Fehler", "$base/last_error", "mdi:alert", null)
+
+        // Main Enable Switch
+        config("switch", "enabled", JSONObject().apply {
+            put("name", "${s.deviceName} Aktiv")
+            put("unique_id", "${s.deviceId}_enabled")
+            put("command_topic", "$base/enabled/set")
+            put("state_topic", "$base/enabled/state")
+            put("payload_on", "ON")
+            put("payload_off", "OFF")
+            put("retain", true)
+            put("optimistic", false)
+            put("icon", "mdi:camera-timer")
+            put("device", device())
+        })
+
+        // Time Window Switch
+        config("switch", "time_window", JSONObject().apply {
+            put("name", "${s.deviceName} Zeitfenster")
+            put("unique_id", "${s.deviceId}_time_window")
+            put("command_topic", "$base/time_window/set")
+            put("state_topic", "$base/time_window/state")
+            put("payload_on", "ON")
+            put("payload_off", "OFF")
+            put("retain", true)
+            put("optimistic", false)
+            put("icon", "mdi:clock-time-range")
+            put("device", device())
+        })
+
+        // Window Start Time
+        config("text", "window_start", JSONObject().apply {
+            put("name", "${s.deviceName} Startzeit")
+            put("unique_id", "${s.deviceId}_window_start")
+            put("command_topic", "$base/window_start/set")
+            put("state_topic", "$base/window_start/state")
+            put("pattern", "^[0-2][0-9]:[0-5][0-9]$")
+            put("mode", "text")
+            put("icon", "mdi:clock-start")
+            put("device", device())
+        })
+
+        // Window End Time
+        config("text", "window_end", JSONObject().apply {
+            put("name", "${s.deviceName} Endzeit")
+            put("unique_id", "${s.deviceId}_window_end")
+            put("command_topic", "$base/window_end/set")
+            put("state_topic", "$base/window_end/state")
+            put("pattern", "^[0-2][0-9]:[0-5][0-9]$")
+            put("mode", "text")
+            put("icon", "mdi:clock-end")
+            put("device", device())
+        })
         
-        // Manual Upload Trigger (Switch is better than button for "fire later" behavior)
+        // Manual Upload Trigger
         config("switch", "manual_upload", JSONObject().apply {
             put("name", "${s.deviceName} Manueller Upload")
             put("unique_id", "${s.deviceId}_manual_upload")
@@ -53,6 +106,10 @@ class MqttDiscovery(private val mqtt: MqttClientManager, private val s: Settings
             val dao = AppDatabase.getInstance(context).photoDao()
             mqtt.publish("$base/battery", getBattery().toString())
             mqtt.publish("$base/photos_pending", dao.getPendingCount().toString())
+            mqtt.publish("$base/enabled/state", if (s.timelapseEnabled) "ON" else "OFF")
+            mqtt.publish("$base/time_window/state", if (s.timeWindowEnabled) "ON" else "OFF")
+            mqtt.publish("$base/window_start/state", String.format(Locale.US, "%02d:%02d", s.windowStartHour, s.windowStartMinute))
+            mqtt.publish("$base/window_end/state", String.format(Locale.US, "%02d:%02d", s.windowEndHour, s.windowEndMinute))
             mqtt.publish("$base/upload/state", if (s.manualUploadRequested) "ON" else "OFF")
             dao.getLastPhoto()?.let {
                 mqtt.publish("$base/last_photo", Instant.ofEpochMilli(it.capturedAt).toString())
