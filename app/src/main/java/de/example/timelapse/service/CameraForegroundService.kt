@@ -253,6 +253,13 @@ class CameraForegroundService : Service() {
                     if (index > 0) delay(2000)
                     val (w, h) = PhotoCaptureHelper.resolveResolution(s, camera.id)
                     PhotoCaptureHelper.captureAndSave(this, camera.id, w, h, s.jpegQuality, PhotoCaptureHelper.cameraLabel(camera))
+                    
+                    // Notify MQTT immediately after each photo is saved
+                    try {
+                        val mqtt = MqttClientManager(this)
+                        MqttDiscovery(mqtt, s, this).publishState()
+                    } catch (_: Throwable) {}
+                    
                 } catch (t: Throwable) {
                     Log.e("Timelapse", "capture failed for camera ${camera.id}", t)
                     failures.add("${camera.id}: ${t.message ?: t.javaClass.simpleName}")
@@ -262,14 +269,10 @@ class CameraForegroundService : Service() {
             // Consolidate MQTT calls
             try {
                 val mqtt = MqttClientManager(this)
-                mqtt.handleMqttCommands()
-                
                 if (failures.isNotEmpty()) {
                     mqtt.publish("timelapse/${s.deviceId}/last_error", "Aufnahme fehlgeschlagen: " + failures.joinToString("; "))
                 }
-                
                 MqttDiscovery(mqtt, s, this).publishState()
-                mqtt.close()
             } catch (t: Throwable) {
                 Log.w("Timelapse", "mqtt state publish failed", t)
             }

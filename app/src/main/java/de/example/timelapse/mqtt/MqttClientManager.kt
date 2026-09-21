@@ -1,6 +1,7 @@
 package de.example.timelapse.mqtt
 import android.content.Context
 import de.example.timelapse.*
+import de.example.timelapse.service.CameraForegroundService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -65,6 +66,7 @@ class MqttClientManager(private val context:Context){
         if (on) settings.lastCaptureAt = 0L
         settings.timelapseEnabled = on
         AlarmScheduler(context).scheduleAll()
+        CameraForegroundService.nudge() // Wake up loop immediately
         changed = true
        }
       }
@@ -73,6 +75,7 @@ class MqttClientManager(private val context:Context){
        if (on != settings.timeWindowEnabled) {
         settings.timeWindowEnabled = on
         AlarmScheduler(context).scheduleAll()
+        CameraForegroundService.nudge()
         changed = true
        }
       }
@@ -82,6 +85,7 @@ class MqttClientManager(private val context:Context){
         settings.windowStartHour = parts[0].toIntOrNull() ?: settings.windowStartHour
         settings.windowStartMinute = parts[1].toIntOrNull() ?: settings.windowStartMinute
         AlarmScheduler(context).scheduleNextCapture()
+        CameraForegroundService.nudge()
         changed = true
        }
       }
@@ -91,24 +95,30 @@ class MqttClientManager(private val context:Context){
         settings.windowEndHour = parts[0].toIntOrNull() ?: settings.windowEndHour
         settings.windowEndMinute = parts[1].toIntOrNull() ?: settings.windowEndMinute
         AlarmScheduler(context).scheduleNextCapture()
+        CameraForegroundService.nudge()
         changed = true
        }
       }
      }
      
      if (changed) {
-      // Clear retained command and notify HA
+      // Clear retained command
       val emptyMsg = MqttMessage("".toByteArray()).apply { qos = 1; isRetained = true }
       try { c.publish(t, emptyMsg) } catch (_: Throwable) {}
-      try { 
-        CoroutineScope(Dispatchers.IO).launch {
-            MqttDiscovery(this@MqttClientManager, settings, context).publishState() 
-        }
-      } catch (_: Throwable) {}
+      // The prefListener in CameraForegroundService will handle the publishState() call
      }
     }
     override fun deliveryComplete(token: IMqttToken?) {}
-    override fun connectComplete(reconnect: Boolean, serverURI: String?) {}
+    override fun connectComplete(reconnect: Boolean, serverURI: String?) {
+        // Re-subscribe on connect/reconnect
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val base = "timelapse/${settings.deviceId}"
+                val ts = arrayOf("$base/upload/set", "$base/enabled/set", "$base/time_window/set", "$base/window_start/set", "$base/window_end/set")
+                c.subscribe(ts, IntArray(ts.size) { 1 })
+            } catch (_: Throwable) {}
+        }
+    }
     override fun authPacketArrived(reasonCode: Int, properties: MqttProperties?) {}
    })
 
@@ -130,8 +140,9 @@ class MqttClientManager(private val context:Context){
    val uri=(if(settings.mqttTls)"ssl" else "tcp")+"://${host}:${settings.mqttPort}"
    val c=MqttAsyncClient(uri,settings.mqttClientId, null)
    val o=MqttConnectionOptions().apply{
-    isCleanStart=true; isAutomaticReconnect=false
-    keepAliveInterval = 600 // 10 minutes for home Wi-Fi usage
+    isCleanStart=false // Keep session to survive brief disconnects
+    isAutomaticReconnect=true
+    keepAliveInterval = 600
     val secrets = SecureSecrets.getInstance(context)
     userName=secrets.mqttUsername.ifBlank{settings.mqttUsername}
     password=secrets.mqttPassword.ifBlank{settings.mqttPassword}.toByteArray()
