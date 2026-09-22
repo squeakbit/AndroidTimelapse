@@ -67,8 +67,22 @@ class MainActivity : ComponentActivity() {
 
     private fun handleWakeupIntent(intent: Intent?) {
         if (intent?.getBooleanExtra("EXTRA_ALARM_CAPTURE", false) == true) {
+            // Set window brightness to minimum (0.01f) so the screen stays dark
+            // during the automated background capture process on older APIs like Android 9.
+            val lp = window.attributes
+            lp.screenBrightness = 0.01f
+            window.attributes = lp
+
             Handler(Looper.getMainLooper()).postDelayed({
-                try { moveTaskToBack(true) } catch (_: Throwable) {}
+                try { 
+                    moveTaskToBack(true) 
+                } catch (_: Throwable) {}
+                
+                // Restore default brightness when moving to the background
+                // so that when the user opens the app manually later, it opens with normal brightness.
+                val lpRestore = window.attributes
+                lpRestore.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                window.attributes = lpRestore
             }, 8000)
         }
     }

@@ -25,14 +25,16 @@ A robust Android application for automated long-term timelapse photography. It f
 ### Technical Notes & Platform Specifics
 
 #### Android 14-16 (API 34-36)
-Camera Foreground Service (FGS) permissions are restricted for background starts. To ensure reliability:
-- **Service Bridge:** When MQTT is configured, the service remains active in the background as a "bridge" to maintain the connection.
-- **Persistent Listener:** A dedicated MQTT listener job ensures that remote commands (like starting the timelapse) are received and executed immediately, even if the device is in a low-power state.
-- **Manual Start:** After a reboot, it is still recommended to open the app once to guarantee the service lifecycle is correctly established by the OS.
+Camera Foreground Service (FGS) permissions are heavily restricted for background starts. To ensure maximum reliability:
+- **Service Bridge & Auto-Wakeup:** The app utilizes an automated foreground activity bridge. When a capture alarm fires, the main activity is briefly launched (with the screen physically remaining dark) to gain "while-in-use" camera permissions. The app automatically returns to the background after the capture.
+- **USE_EXACT_ALARM:** On Android 14+, the app requests the `USE_EXACT_ALARM` permission, which is automatically granted by the system for alarm-based apps, ensuring the device wakes up exactly on time even from deep sleep (Doze).
+- **Time Window Optimization:** The alarm logic calculates the next window start, allowing the device to sleep continuously through the night without any intermediate wake-ups, significantly saving battery.
+- **Manual Start:** After a first installation or deep system update, it is recommended to open the app once to establish the service lifecycle.
 
-#### Battery & Alarms
-- **Battery Optimization:** For reliable long-term operation, it is highly recommended to disable battery optimizations for this app.
-- **Exact Alarms:** For Android 12+, the `SCHEDULE_EXACT_ALARM` permission may be required. The app falls back to `setAndAllowWhileIdle` if not granted.
+#### Battery, Alarms & Stealth
+- **Battery Optimization:** For reliable long-term operation, it is mandatory to disable battery optimizations for this app via the Settings tab.
+- **Stealth Mode (API 26-28):** On older Android versions (like Android 9) that force the screen to turn on during activity launches, the app automatically forces its window brightness to minimum during the background capture cycle and restores it afterwards, ensuring discrete operation.
+- **Exact Alarms:** For Android 12-13, the `SCHEDULE_EXACT_ALARM` permission may be required. On Android 14+, the system uses the new `USE_EXACT_ALARM` standard.
 
 #### Build Requirements
 The project is pinned to **JDK 17** for the toolchain. While modern Android Studio versions may run on newer JDKs, this project uses JVM target 17 for stability and compatibility.
@@ -63,14 +65,16 @@ Eine robuste Android-App für automatisierte Langzeit-Zeitrafferaufnahmen. Sie b
 ### Wichtige Hinweise & Plattform-Besonderheiten
 
 #### Android 14-16 (API 34-36)
-Die Kamera-FGS-Berechtigung ist im Hintergrund eingeschränkt. Für maximale Zuverlässigkeit:
-- **Service-Brücke:** Bei aktiver MQTT-Konfiguration bleibt der Dienst als "Brücke" im Hintergrund aktiv, um die Verbindung zu halten.
-- **Permanenter Listener:** Ein dedizierter MQTT-Job garantiert, dass Fernsteuerungsbefehle (wie das Starten der Aufnahmen) sofort empfangen und ausgeführt werden, selbst wenn das Gerät im Energiesparmodus ist.
-- **Manueller Start:** Nach einem Neustart wird empfohlen, die App einmal zu öffnen, um sicherzustellen, dass das System den Dienst-Lebenszyklus korrekt etabliert.
+Die Kamera-FGS-Berechtigung ist im Hintergrund stark eingeschränkt. Für maximale Zuverlässigkeit:
+- **Service-Brücke & Auto-Wakeup:** Die App nutzt eine automatisierte Vordergrund-Aktivitätsbrücke. Wenn ein Aufnahmealarm auslöst, wird die Hauptaktivität kurzzeitig gestartet (wobei der Bildschirm physisch dunkel bleibt), um die "While-in-use"-Kameraberechtigungen zu erhalten. Die App kehrt nach der Aufnahme automatisch in den Hintergrund zurück.
+- **USE_EXACT_ALARM:** Unter Android 14+ fordert die App die Berechtigung `USE_EXACT_ALARM` an, die vom System für alarmbasierte Apps automatisch erteilt wird. Dies stellt sicher, dass das Gerät auch aus dem Tiefschlaf (Doze) pünktlich aufwacht.
+- **Zeitfenster-Optimierung:** Die Alarmlogik berechnet den nächsten Fensterstart, sodass das Gerät die Nacht ohne Zwischenaufwachen komplett durchschlafen kann, was massiv Akku spart.
+- **Manueller Start:** Nach einer Erstinstallation oder tiefen Systemupdates wird empfohlen, die App einmal zu öffnen, um den Dienst-Lebenszyklus zu etablieren.
 
-#### Akku & Alarme
-- **Akku-Optimierung:** Für einen zuverlässigen Betrieb sollte die Akku-Optimierung für diese App in den Android-Einstellungen deaktiviert werden.
-- **Exakte Alarme:** Ab Android 12 kann die Berechtigung `SCHEDULE_EXACT_ALARM` erforderlich sein. Die App nutzt andernfalls `setAndAllowWhileIdle`.
+#### Akku, Alarme & Tarnung
+- **Akku-Optimierung:** Für einen zuverlässigen Langzeitbetrieb ist es zwingend erforderlich, die Akku-Optimierung für diese App über den Setup-Tab zu deaktivieren.
+- **Tarnmodus (API 26-28):** Auf älteren Android-Versionen (wie Android 9), die das Einschalten des Bildschirms während des Aktivitätsstarts erzwingen, dimmt die App ihre Fensterhelligkeit während des automatischen Aufnahmezyklus automatisch auf das Minimum und stellt sie danach wieder her.
+- **Exakte Alarme:** Für Android 12-13 kann die Berechtigung `SCHEDULE_EXACT_ALARM` erforderlich sein. Auf Android 14+ greift der neue `USE_EXACT_ALARM`-Standard.
 
 #### Build-Hinweise
 Das Projekt ist auf **JDK 17** fixiert. Dies ist beabsichtigt, um eine stabile Kompilierung sicherzustellen, auch wenn das Build-System auf neueren JDK-Versionen läuft.
