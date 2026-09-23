@@ -1,4 +1,4 @@
-# Android Timelapse
+# Android Timelapse for Plants
 
 [English](#english) | [Deutsch](#deutsch)
 
