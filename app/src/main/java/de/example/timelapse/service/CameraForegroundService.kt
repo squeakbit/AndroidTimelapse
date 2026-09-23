@@ -70,7 +70,8 @@ class CameraForegroundService : Service() {
             
             // Sync state to MQTT immediately
             if (key == "timelapse_enabled" || key == "time_window_enabled" || key == "window_start_hour" || 
-                key == "window_start_minute" || key == "window_end_hour" || key == "window_end_minute") {
+                key == "window_start_minute" || key == "window_end_hour" || key == "window_end_minute" ||
+                key == "capture_interval_minutes") {
                 scope.launch {
                     try {
                         val s = SettingsManager(this@CameraForegroundService)

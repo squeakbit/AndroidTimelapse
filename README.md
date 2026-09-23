@@ -27,7 +27,7 @@ A robust Android application for automated long-term timelapse photography. It f
 #### Android 14-16 (API 34-36)
 Camera Foreground Service (FGS) permissions are heavily restricted for background starts. To ensure maximum reliability:
 - **Service Bridge & Auto-Wakeup:** The app utilizes an automated foreground activity bridge. When a capture alarm fires, the main activity is briefly launched (with the screen physically remaining dark) to gain "while-in-use" camera permissions. The app automatically returns to the background after the capture.
-- **USE_EXACT_ALARM:** On Android 14+, the app requests the `USE_EXACT_ALARM` permission, which is automatically granted by the system for alarm-based apps, ensuring the device wakes up exactly on time even from deep sleep (Doze).
+- **USE_EXACT_ALARM & Status Bar Icon:** On Android 14+, the app uses `AlarmManager.setAlarmClock()` (`USE_EXACT_ALARM`) to wake up from deep sleep (Doze). Standard `setExactAndAllowWhileIdle()` failed on Android 14-16, causing devices to sleep indefinitely due to Doze throttling and background activity launch restrictions. Using `setAlarmClock()` guarantees punctual wakeups, but causes Android to display an alarm clock icon in the status bar and list the next capture time as a system alarm on lock screens / widgets.
 - **Time Window Optimization:** The alarm logic calculates the next window start, allowing the device to sleep continuously through the night without any intermediate wake-ups, significantly saving battery.
 - **Manual Start:** After a first installation or deep system update, it is recommended to open the app once to establish the service lifecycle.
 
@@ -67,7 +67,7 @@ Eine robuste Android-App für automatisierte Langzeit-Zeitrafferaufnahmen. Sie b
 #### Android 14-16 (API 34-36)
 Die Kamera-FGS-Berechtigung ist im Hintergrund stark eingeschränkt. Für maximale Zuverlässigkeit:
 - **Service-Brücke & Auto-Wakeup:** Die App nutzt eine automatisierte Vordergrund-Aktivitätsbrücke. Wenn ein Aufnahmealarm auslöst, wird die Hauptaktivität kurzzeitig gestartet (wobei der Bildschirm physisch dunkel bleibt), um die "While-in-use"-Kameraberechtigungen zu erhalten. Die App kehrt nach der Aufnahme automatisch in den Hintergrund zurück.
-- **USE_EXACT_ALARM:** Unter Android 14+ fordert die App die Berechtigung `USE_EXACT_ALARM` an, die vom System für alarmbasierte Apps automatisch erteilt wird. Dies stellt sicher, dass das Gerät auch aus dem Tiefschlaf (Doze) pünktlich aufwacht.
+- **USE_EXACT_ALARM & Wecker-Symbol:** Unter Android 14+ verwendet die App `AlarmManager.setAlarmClock()` (`USE_EXACT_ALARM`), um aus dem tiefen Doze-Modus aufzuwachen. Standard `setExactAndAllowWhileIdle()` führte auf Android 14-16 durch Doze-Drosselung und Hintergrund-Startverbote dazu, dass Geräte nach einigen Minuten einschlafen und nicht mehr aufwachen. Durch `setAlarmClock()` wacht das Gerät garantiert pünktlich auf, was jedoch dazu führt, dass Android ein Wecker-Symbol in der Statusleiste anzeigt und den nächsten Aufnahmezeitpunkt als aktiven System-Wecker auf dem Sperrbildschirm anzeigt.
 - **Zeitfenster-Optimierung:** Die Alarmlogik berechnet den nächsten Fensterstart, sodass das Gerät die Nacht ohne Zwischenaufwachen komplett durchschlafen kann, was massiv Akku spart.
 - **Manueller Start:** Nach einer Erstinstallation oder tiefen Systemupdates wird empfohlen, die App einmal zu öffnen, um den Dienst-Lebenszyklus zu etablieren.
 

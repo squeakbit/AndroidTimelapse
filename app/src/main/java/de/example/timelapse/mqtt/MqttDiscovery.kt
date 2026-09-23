@@ -20,7 +20,7 @@ class MqttDiscovery(private val mqtt: MqttClientManager, private val s: Settings
     suspend fun publishAll() {
         sensor("battery", "Akku", "$base/battery", "mdi:battery", "%")
         sensor("photos_pending", "Fotos ausstehend", "$base/photos_pending", "mdi:image-multiple-outline", null)
-        sensor("last_photo", "Letztes Foto", "$base/last_photo", "mdi:camera-clock", "timestamp")
+        sensor("last_photo", "Letztes Foto", "$base/last_photo", "mdi:camera-timer", "timestamp")
         sensor("last_upload", "Letzter Upload", "$base/last_upload", "mdi:cloud-upload-outline", "timestamp")
         sensor("last_upload_failed", "Letzter Upload Fehler", "$base/last_upload_failed", "mdi:alert-circle-outline", null)
         sensor("last_error", "Letzter Fehler", "$base/last_error", "mdi:alert", null)
@@ -49,7 +49,7 @@ class MqttDiscovery(private val mqtt: MqttClientManager, private val s: Settings
             put("payload_off", "OFF")
             put("retain", true)
             put("optimistic", false)
-            put("icon", "mdi:clock-time-range")
+            put("icon", "mdi:timetable")
             put("device", device())
         })
 
@@ -74,6 +74,18 @@ class MqttDiscovery(private val mqtt: MqttClientManager, private val s: Settings
             put("pattern", "^[0-2][0-9]:[0-5][0-9]$")
             put("mode", "text")
             put("icon", "mdi:clock-end")
+            put("device", device())
+        })
+
+        // Capture Interval (Number / Text input)
+        config("text", "capture_interval", JSONObject().apply {
+            put("name", "${s.deviceName} Intervall (Minuten)")
+            put("unique_id", "${s.deviceId}_capture_interval")
+            put("command_topic", "$base/capture_interval/set")
+            put("state_topic", "$base/capture_interval/state")
+            put("pattern", "^[0-9]+$")
+            put("mode", "text")
+            put("icon", "mdi:update")
             put("device", device())
         })
         
@@ -110,6 +122,7 @@ class MqttDiscovery(private val mqtt: MqttClientManager, private val s: Settings
             mqtt.publish("$base/time_window/state", if (s.timeWindowEnabled) "ON" else "OFF")
             mqtt.publish("$base/window_start/state", String.format(Locale.US, "%02d:%02d", s.windowStartHour, s.windowStartMinute))
             mqtt.publish("$base/window_end/state", String.format(Locale.US, "%02d:%02d", s.windowEndHour, s.windowEndMinute))
+            mqtt.publish("$base/capture_interval/state", s.captureIntervalMinutes.toString())
             mqtt.publish("$base/upload/state", if (s.manualUploadRequested) "ON" else "OFF")
             dao.getLastPhoto()?.let {
                 mqtt.publish("$base/last_photo", Instant.ofEpochMilli(it.capturedAt).toString())

@@ -48,7 +48,7 @@ class MqttClientManager(private val context:Context){
   
   try {
    val base = "timelapse/${settings.deviceId}"
-   val topics = arrayOf("$base/upload/set", "$base/enabled/set", "$base/time_window/set", "$base/window_start/set", "$base/window_end/set")
+   val topics = arrayOf("$base/upload/set", "$base/enabled/set", "$base/time_window/set", "$base/window_start/set", "$base/window_end/set", "$base/capture_interval/set")
    
    c.setCallback(object : MqttCallback {
     override fun disconnected(dr: MqttDisconnectResponse?) {}
@@ -99,6 +99,15 @@ class MqttClientManager(private val context:Context){
         changed = true
        }
       }
+      "$base/capture_interval/set" -> {
+       val minutes = payload.toIntOrNull()
+       if (minutes != null && minutes > 0) {
+        settings.captureIntervalMinutes = minutes
+        AlarmScheduler(context).scheduleAll()
+        CameraForegroundService.nudge()
+        changed = true
+       }
+      }
      }
      
      if (changed) {
@@ -114,7 +123,7 @@ class MqttClientManager(private val context:Context){
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val base = "timelapse/${settings.deviceId}"
-                val ts = arrayOf("$base/upload/set", "$base/enabled/set", "$base/time_window/set", "$base/window_start/set", "$base/window_end/set")
+                val ts = arrayOf("$base/upload/set", "$base/enabled/set", "$base/time_window/set", "$base/window_start/set", "$base/window_end/set", "$base/capture_interval/set")
                 c.subscribe(ts, IntArray(ts.size) { 1 })
             } catch (_: Throwable) {}
         }
