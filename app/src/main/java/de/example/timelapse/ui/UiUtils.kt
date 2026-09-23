@@ -5,6 +5,9 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.net.Uri
+import android.os.Environment
+import android.provider.MediaStore
+import android.util.Log
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
@@ -23,8 +26,12 @@ import de.example.timelapse.R
 import de.example.timelapse.SettingsManager
 import de.example.timelapse.camera.CameraInfo
 import de.example.timelapse.data.AppDatabase
+import de.example.timelapse.data.PhotoEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Locale
 
 sealed class GhostPhotoState {
     object Idle : GhostPhotoState()
@@ -34,25 +41,244 @@ sealed class GhostPhotoState {
     data class Loaded(val bitmap: Bitmap, val edgeBitmap: Bitmap? = null) : GhostPhotoState()
 }
 
+fun isUriReadable(context: Context, uri: Uri): Boolean {
+    return try {
+        context.contentResolver.openInputStream(uri)?.use { true } ?: false
+    } catch (_: Throwable) {
+        false
+    }
+}
+
+private fun parseDateFromFileName(fileName: String): Long {
+    val nameWithoutExt = fileName.substringBeforeLast('.')
+    val parts = nameWithoutExt.split('_')
+    if (parts.size >= 2) {
+        val datePart = parts[1]
+        val format = if (datePart.contains('-')) SimpleDateFormat("yyMMdd-HHmm", Locale.US)
+                     else SimpleDateFormat("yyMMdd", Locale.US)
+        try {
+            val date = format.parse(datePart)
+            if (date != null) return date.time
+        } catch (_: Throwable) {}
+    }
+    return 0L
+}
+
+private fun findFileByName(directory: File, fileName: String): File? {
+    if (!directory.exists() || !directory.isDirectory) return null
+    val files = directory.listFiles() ?: return null
+    for (file in files) {
+        if (file.isDirectory) {
+            val found = findFileByName(file, fileName)
+            if (found != null) return found
+        } else if (file.name.equals(fileName, ignoreCase = true)) {
+            return file
+        }
+    }
+    return null
+}
+
+private fun collectJpgFiles(directory: File, resultList: MutableList<File>, maxDepth: Int = 3, currentDepth: Int = 0) {
+    if (currentDepth > maxDepth || !directory.exists() || !directory.isDirectory) return
+    val files = directory.listFiles() ?: return
+    for (file in files) {
+        if (file.isDirectory) {
+            collectJpgFiles(file, resultList, maxDepth, currentDepth + 1)
+        } else if (file.name.endsWith(".jpg", ignoreCase = true) || file.name.endsWith(".jpeg", ignoreCase = true)) {
+            resultList.add(file)
+        }
+    }
+}
+
+suspend fun resolveValidPhotoUri(context: Context, entity: PhotoEntity): Uri? = withContext(Dispatchers.IO) {
+    val initialUri = Uri.parse(entity.localPath)
+    if (isUriReadable(context, initialUri)) return@withContext initialUri
+
+    // 1. Try MediaStore search by fileName
+    try {
+        val projection = arrayOf(MediaStore.Images.Media._ID)
+        val selection = "${MediaStore.Images.Media.DISPLAY_NAME} = ?"
+        val args = arrayOf(entity.fileName)
+        context.contentResolver.query(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            projection,
+            selection,
+            args,
+            null
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID))
+                val contentUri = Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id.toString())
+                if (isUriReadable(context, contentUri)) {
+                    AppDatabase.getInstance(context).photoDao().update(entity.copy(localPath = contentUri.toString()))
+                    return@withContext contentUri
+                }
+            }
+        }
+    } catch (_: Throwable) {}
+
+    // 2. Try physical file search in Pictures/Timelapse
+    try {
+        val root = File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
+            "Timelapse"
+        )
+        val foundFile = findFileByName(root, entity.fileName)
+        if (foundFile != null && foundFile.exists()) {
+            val fileUri = Uri.fromFile(foundFile)
+            if (isUriReadable(context, fileUri)) {
+                AppDatabase.getInstance(context).photoDao().update(entity.copy(localPath = fileUri.toString()))
+                return@withContext fileUri
+            }
+        }
+    } catch (_: Throwable) {}
+
+    null
+}
+
+private var lastSyncTime = 0L
+
+suspend fun syncExistingPhotosFromStorage(context: Context, force: Boolean = false) = withContext(Dispatchers.IO) {
+    val now = System.currentTimeMillis()
+    if (!force && now - lastSyncTime < 30_000L) return@withContext
+    lastSyncTime = now
+
+    val dao = AppDatabase.getInstance(context).photoDao()
+    val existingNames = try {
+        dao.getAllFileNames().toSet()
+    } catch (_: Throwable) {
+        emptySet()
+    }
+
+    val newPhotos = mutableListOf<PhotoEntity>()
+
+    // 1. Scan MediaStore
+    try {
+        val projection = arrayOf(
+            MediaStore.Images.Media._ID,
+            MediaStore.Images.Media.DISPLAY_NAME,
+            MediaStore.Images.Media.DATE_TAKEN,
+            MediaStore.Images.Media.DATE_ADDED
+        )
+        val selection = "${MediaStore.Images.Media.DISPLAY_NAME} LIKE '%.jpg' OR ${MediaStore.Images.Media.DISPLAY_NAME} LIKE '%.jpeg'"
+        context.contentResolver.query(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            projection,
+            selection,
+            null,
+            "${MediaStore.Images.Media.DATE_TAKEN} DESC"
+        )?.use { cursor ->
+            val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+            val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
+            val takenCol = cursor.getColumnIndex(MediaStore.Images.Media.DATE_TAKEN)
+            val addedCol = cursor.getColumnIndex(MediaStore.Images.Media.DATE_ADDED)
+
+            while (cursor.moveToNext()) {
+                val id = cursor.getLong(idCol)
+                val fileName = cursor.getString(nameCol) ?: continue
+                if (!fileName.contains('_')) continue
+                if (existingNames.contains(fileName)) continue
+
+                val contentUri = Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id.toString())
+                val taken = if (takenCol != -1 && cursor.getLong(takenCol) > 0) {
+                    cursor.getLong(takenCol)
+                } else if (addedCol != -1 && cursor.getLong(addedCol) > 0) {
+                    cursor.getLong(addedCol) * 1000L
+                } else {
+                    val parsed = parseDateFromFileName(fileName)
+                    if (parsed > 0) parsed else System.currentTimeMillis()
+                }
+
+                newPhotos.add(
+                    PhotoEntity(
+                        localPath = contentUri.toString(),
+                        fileName = fileName,
+                        capturedAt = taken
+                    )
+                )
+            }
+        }
+    } catch (_: Throwable) {}
+
+    // 2. Scan physical Pictures/Timelapse directory
+    try {
+        val root = File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
+            "Timelapse"
+        )
+        if (root.exists() && root.isDirectory) {
+            val fileList = mutableListOf<File>()
+            collectJpgFiles(root, fileList, maxDepth = 3)
+            for (file in fileList) {
+                val fileName = file.name
+                if (fileName.contains('_') && !existingNames.contains(fileName) && newPhotos.none { it.fileName == fileName }) {
+                    val fileUri = Uri.fromFile(file).toString()
+                    val parsedDate = parseDateFromFileName(fileName)
+                    val taken = if (parsedDate > 0) parsedDate else file.lastModified()
+                    newPhotos.add(
+                        PhotoEntity(
+                            localPath = fileUri,
+                            fileName = fileName,
+                            capturedAt = taken
+                        )
+                    )
+                }
+            }
+        }
+    } catch (_: Throwable) {}
+
+    if (newPhotos.isNotEmpty()) {
+        try {
+            dao.insertAll(newPhotos)
+        } catch (_: Throwable) {
+            for (photo in newPhotos) {
+                try { dao.insert(photo) } catch (_: Throwable) {}
+            }
+        }
+    }
+}
+
+private suspend fun loadGhostFromCandidates(context: Context, candidates: List<PhotoEntity>): GhostPhotoState {
+    for (photo in candidates) {
+        val validUri = resolveValidPhotoUri(context, photo) ?: continue
+        val bitmap = decodeOrientedBitmap(context, validUri)
+        if (bitmap != null) {
+            val edgeBitmap = applySobelFilter(bitmap)
+            return GhostPhotoState.Loaded(bitmap, edgeBitmap)
+        }
+    }
+    return GhostPhotoState.NoPhoto
+}
+
 suspend fun loadGhostPhotoState(context: Context, cameraLabel: String?): GhostPhotoState =
     withContext(Dispatchers.IO) {
-        if (cameraLabel == null) return@withContext GhostPhotoState.NoPhoto
+        if (cameraLabel.isNullOrBlank()) return@withContext GhostPhotoState.NoPhoto
         val settings = SettingsManager(context)
         val pinnedId = settings.getPinnedGhostPhotoId(cameraLabel)
         val dao = AppDatabase.getInstance(context).photoDao()
-        
+
         try {
-            val photo = if (pinnedId != -1L) {
-                dao.getPhotoById(pinnedId) ?: dao.getLastPhotoByCameraLabel(cameraLabel)
+            val candidates = if (pinnedId != -1L) {
+                val pinned = dao.getPhotoById(pinnedId)
+                val all = dao.getAllPhotosByCameraLabel(cameraLabel)
+                if (pinned != null) listOf(pinned) + all.filter { it.id != pinned.id } else all
             } else {
-                dao.getLastPhotoByCameraLabel(cameraLabel)
-            } ?: return@withContext GhostPhotoState.NoPhoto
-            
-            val bitmap = decodeOrientedBitmap(context, Uri.parse(photo.localPath))
-            if (bitmap != null) {
-                val edgeBitmap = applySobelFilter(bitmap)
-                GhostPhotoState.Loaded(bitmap, edgeBitmap)
-            } else GhostPhotoState.LoadFailed
+                dao.getAllPhotosByCameraLabel(cameraLabel)
+            }
+
+            if (candidates.isEmpty()) {
+                syncExistingPhotosFromStorage(context, force = true)
+                val rechecked = dao.getAllPhotosByCameraLabel(cameraLabel)
+                if (rechecked.isEmpty()) return@withContext GhostPhotoState.NoPhoto
+                return@withContext loadGhostFromCandidates(context, rechecked)
+            }
+
+            val result = loadGhostFromCandidates(context, candidates)
+            if (result is GhostPhotoState.Loaded) return@withContext result
+
+            syncExistingPhotosFromStorage(context, force = true)
+            val rechecked = dao.getAllPhotosByCameraLabel(cameraLabel)
+            loadGhostFromCandidates(context, rechecked)
         } catch (_: Throwable) {
             GhostPhotoState.LoadFailed
         }
@@ -60,22 +286,32 @@ suspend fun loadGhostPhotoState(context: Context, cameraLabel: String?): GhostPh
 
 suspend fun hasReadableGhostPhoto(context: Context, cameraLabel: String?): Boolean =
     withContext(Dispatchers.IO) {
-        if (cameraLabel == null) return@withContext false
+        if (cameraLabel.isNullOrBlank()) return@withContext false
         val settings = SettingsManager(context)
         val pinnedId = settings.getPinnedGhostPhotoId(cameraLabel)
         val dao = AppDatabase.getInstance(context).photoDao()
-        
-        val entry = if (pinnedId != -1L) {
-            dao.getPhotoById(pinnedId) ?: dao.getLastPhotoByCameraLabel(cameraLabel)
+
+        val candidates = if (pinnedId != -1L) {
+            val pinned = dao.getPhotoById(pinnedId)
+            val all = dao.getAllPhotosByCameraLabel(cameraLabel)
+            if (pinned != null) listOf(pinned) + all.filter { it.id != pinned.id } else all
         } else {
-            dao.getLastPhotoByCameraLabel(cameraLabel)
-        } ?: return@withContext false
-        
-        try {
-            context.contentResolver.openInputStream(Uri.parse(entry.localPath))?.use { true } ?: false
-        } catch (_: Throwable) {
-            false
+            dao.getAllPhotosByCameraLabel(cameraLabel)
         }
+
+        for (photo in candidates) {
+            val validUri = resolveValidPhotoUri(context, photo)
+            if (validUri != null) return@withContext true
+        }
+
+        syncExistingPhotosFromStorage(context, force = true)
+        val rechecked = dao.getAllPhotosByCameraLabel(cameraLabel)
+        for (photo in rechecked) {
+            val validUri = resolveValidPhotoUri(context, photo)
+            if (validUri != null) return@withContext true
+        }
+
+        false
     }
 
 fun exifRotationDegrees(exif: ExifInterface): Int =

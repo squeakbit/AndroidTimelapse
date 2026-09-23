@@ -96,6 +96,7 @@ fun CameraTab(
 
     LaunchedEffect(Unit) {
         cameras = withContext(Dispatchers.IO) { CameraRepository(context).list() }
+        syncExistingPhotosFromStorage(context)
         val lastUsed = settings.lastPreviewCameraId
         if (lastUsed.isBlank() || cameras.none { it.id == lastUsed }) {
             val bestDefault = withContext(Dispatchers.IO) {
@@ -111,17 +112,33 @@ fun CameraTab(
     val selectedCamera = cameras.firstOrNull { it.id == selectedCameraId }
     val selectedCameraLabel = selectedCamera?.let { PhotoCaptureHelper.cameraLabel(it) }
 
-    val pinnedId = remember(selectedCameraLabel, showGhostSelector) {
-        selectedCameraLabel?.let { settings.getPinnedGhostPhotoId(it) } ?: -1L
+    var currentPinnedId by remember(selectedCameraLabel, showGhostSelector) {
+        mutableLongStateOf(selectedCameraLabel?.let { settings.getPinnedGhostPhotoId(it) } ?: -1L)
     }
 
     val hasGhostPhoto = remember(selectedCameraLabel) { mutableStateOf(false) }
-    LaunchedEffect(selectedCameraLabel) {
-        val exists = hasReadableGhostPhoto(context, selectedCameraLabel)
-        hasGhostPhoto.value = exists
-        // Only auto-disable if we are sure it's missing (cameras loaded but photo isn't there)
-        if (!exists && cameras.isNotEmpty() && selectedCameraLabel != null) {
-            onShowGhostChange(false)
+
+    LaunchedEffect(showGhost, selectedCameraLabel, currentPinnedId) {
+        if (showGhost && selectedCameraLabel != null) {
+            val dao = AppDatabase.getInstance(context).photoDao()
+            dao.observeLastPhotoByCameraLabel(selectedCameraLabel).collect {
+                currentPinnedId = settings.getPinnedGhostPhotoId(selectedCameraLabel)
+                val exists = hasReadableGhostPhoto(context, selectedCameraLabel)
+                hasGhostPhoto.value = exists
+                if (exists) {
+                    ghostPhotoState = GhostPhotoState.Loading
+                    ghostPhotoState = loadGhostPhotoState(context, selectedCameraLabel)
+                } else {
+                    ghostPhotoState = GhostPhotoState.NoPhoto
+                }
+            }
+        } else if (selectedCameraLabel != null) {
+            currentPinnedId = settings.getPinnedGhostPhotoId(selectedCameraLabel)
+            val exists = hasReadableGhostPhoto(context, selectedCameraLabel)
+            hasGhostPhoto.value = exists
+            ghostPhotoState = GhostPhotoState.Idle
+        } else {
+            ghostPhotoState = GhostPhotoState.Idle
         }
     }
 
@@ -132,6 +149,10 @@ fun CameraTab(
                 AppDatabase.getInstance(context).photoDao().getRecentPhotosByCameraLabel(selectedCameraLabel, 50)
             }
             loadingRecent = false
+            scope.launch(Dispatchers.IO) {
+                syncExistingPhotosFromStorage(context)
+                recentPhotos = AppDatabase.getInstance(context).photoDao().getRecentPhotosByCameraLabel(selectedCameraLabel, 50)
+            }
         }
     }
 
@@ -141,15 +162,6 @@ fun CameraTab(
     LaunchedEffect(ghostOpacity) { /* Saved onValueChangeFinished in Slider */ }
     LaunchedEffect(ghostOscillationEnabled) { settings.ghostOscillationEnabled = ghostOscillationEnabled }
     LaunchedEffect(selectedCameraId) { settings.lastPreviewCameraId = selectedCameraId }
-
-    LaunchedEffect(showGhost, selectedCameraLabel) {
-        if (showGhost && hasGhostPhoto.value) {
-            ghostPhotoState = GhostPhotoState.Loading
-            ghostPhotoState = loadGhostPhotoState(context, selectedCameraLabel)
-        } else {
-            ghostPhotoState = GhostPhotoState.Idle
-        }
-    }
 
     val (rawWidth, rawHeight) = if (selectedCameraId.isNotBlank())
         PhotoCaptureHelper.resolveResolution(settings, selectedCameraId)
@@ -344,7 +356,7 @@ fun CameraTab(
                         shape = RoundedCornerShape(4.dp)
                     ) {
                         Text(
-                            if (pinnedId != -1L) stringResource(R.string.pinned_indicator) else stringResource(R.string.last_photo),
+                            if (currentPinnedId != -1L) stringResource(R.string.pinned_indicator) else stringResource(R.string.last_photo),
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                             color = Color.Yellow,
                             style = MaterialTheme.typography.labelSmall
@@ -611,14 +623,11 @@ fun CameraTab(
                 OutlinedButton(
                     onClick = {
                         selectedCameraLabel?.let { settings.setPinnedGhostPhotoId(it, -1L) }
+                        currentPinnedId = -1L
                         showGhostSelector = false
-                        scope.launch {
-                            ghostPhotoState = GhostPhotoState.Loading
-                            ghostPhotoState = loadGhostPhotoState(context, selectedCameraLabel)
-                        }
                     },
                     modifier = Modifier.fillMaxWidth(),
-                    enabled = pinnedId != -1L
+                    enabled = currentPinnedId != -1L
                 ) {
                     Icon(Icons.Default.History, null)
                     Spacer(Modifier.width(8.dp))
@@ -644,7 +653,7 @@ fun CameraTab(
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         items(recentPhotos, key = { it.id }) { photo ->
-                            val isPinned = photo.id == pinnedId
+                            val isPinned = photo.id == currentPinnedId
                             Box(
                                 modifier = Modifier
                                     .aspectRatio(1f)
@@ -652,18 +661,16 @@ fun CameraTab(
                                     .background(if (isPinned) MaterialTheme.colorScheme.primary else Color.DarkGray)
                                     .clickable {
                                         selectedCameraLabel?.let { settings.setPinnedGhostPhotoId(it, photo.id) }
+                                        currentPinnedId = photo.id
                                         showGhostSelector = false
-                                        scope.launch {
-                                            ghostPhotoState = GhostPhotoState.Loading
-                                            ghostPhotoState = loadGhostPhotoState(context, selectedCameraLabel)
-                                        }
                                     }
                             ) {
                                 // Simple thumbnail loader using our existing helper
                                 var thumbnail by remember { mutableStateOf<Bitmap?>(null) }
                                 LaunchedEffect(photo.localPath) {
                                     thumbnail = withContext(Dispatchers.IO) {
-                                        decodeOrientedBitmap(context, Uri.parse(photo.localPath), targetSize = 300)
+                                        val validUri = resolveValidPhotoUri(context, photo) ?: Uri.parse(photo.localPath)
+                                        decodeOrientedBitmap(context, validUri, targetSize = 300)
                                     }
                                 }
 

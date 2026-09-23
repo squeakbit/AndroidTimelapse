@@ -159,6 +159,9 @@ object PhotoCaptureHelper {
                 capturedAt = System.currentTimeMillis()
             )
             val id = AppDatabase.getInstance(context).photoDao().insert(entity)
+            try {
+                SettingsManager(context).setPinnedGhostPhotoId(label, -1L)
+            } catch (_: Throwable) {}
             return entity.copy(id = id)
         } finally {
             camera.close()

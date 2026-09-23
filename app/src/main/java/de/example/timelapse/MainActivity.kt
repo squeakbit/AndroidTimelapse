@@ -50,7 +50,14 @@ class MainActivity : ComponentActivity() {
         }
 
         cameraPermission.launch(Manifest.permission.CAMERA)
-        if (Build.VERSION.SDK_INT >= 33) {
+        if (Build.VERSION.SDK_INT >= 34) {
+            mediaPermission.launch(
+                arrayOf(
+                    Manifest.permission.READ_MEDIA_IMAGES,
+                    Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED
+                )
+            )
+        } else if (Build.VERSION.SDK_INT >= 33) {
             mediaPermission.launch(arrayOf(Manifest.permission.READ_MEDIA_IMAGES))
         } else {
             storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
