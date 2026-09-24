@@ -126,9 +126,13 @@ fun CameraTab(
                 val exists = hasReadableGhostPhoto(context, selectedCameraLabel)
                 hasGhostPhoto.value = exists
                 if (exists) {
+                    (ghostPhotoState as? GhostPhotoState.Loaded)?.recycle()
                     ghostPhotoState = GhostPhotoState.Loading
-                    ghostPhotoState = loadGhostPhotoState(context, selectedCameraLabel)
+                    val loaded = loadGhostPhotoState(context, selectedCameraLabel)
+                    (ghostPhotoState as? GhostPhotoState.Loaded)?.recycle()
+                    ghostPhotoState = loaded
                 } else {
+                    (ghostPhotoState as? GhostPhotoState.Loaded)?.recycle()
                     ghostPhotoState = GhostPhotoState.NoPhoto
                 }
             }
@@ -136,8 +140,10 @@ fun CameraTab(
             currentPinnedId = settings.getPinnedGhostPhotoId(selectedCameraLabel)
             val exists = hasReadableGhostPhoto(context, selectedCameraLabel)
             hasGhostPhoto.value = exists
+            (ghostPhotoState as? GhostPhotoState.Loaded)?.recycle()
             ghostPhotoState = GhostPhotoState.Idle
         } else {
+            (ghostPhotoState as? GhostPhotoState.Loaded)?.recycle()
             ghostPhotoState = GhostPhotoState.Idle
         }
     }
@@ -194,7 +200,7 @@ fun CameraTab(
         if (selectedCameraId.isNotBlank()) {
             previewLoading = true
             val file = PhotoCaptureHelper.capturePreview(context, selectedCameraId)
-            val newBitmap = file?.let { decodeOrientedBitmap(it.absolutePath) }
+            val newBitmap = file?.let { withContext(Dispatchers.IO) { decodeOrientedBitmap(it.absolutePath) } }
             file?.delete()
             previewBitmap?.let { if (!it.isRecycled) it.recycle() }
             previewBitmap = newBitmap
@@ -562,7 +568,13 @@ fun CameraTab(
                         }
 
                         TextButton(
-                            onClick = { scope.launch { ghostPhotoState = GhostPhotoState.Loading; ghostPhotoState = loadGhostPhotoState(context, selectedCameraLabel) } },
+                            onClick = { scope.launch { 
+                                (ghostPhotoState as? GhostPhotoState.Loaded)?.recycle()
+                                ghostPhotoState = GhostPhotoState.Loading
+                                val loaded = loadGhostPhotoState(context, selectedCameraLabel)
+                                (ghostPhotoState as? GhostPhotoState.Loaded)?.recycle()
+                                ghostPhotoState = loaded
+                            } },
                             modifier = Modifier.align(Alignment.End)
                         ) {
                             Icon(Icons.Default.Cached, null, modifier = Modifier.size(18.dp))

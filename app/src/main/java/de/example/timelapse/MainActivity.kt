@@ -27,11 +27,14 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.lifecycleScope
 import de.example.timelapse.service.CameraForegroundService
 import de.example.timelapse.ui.CameraTab
 import de.example.timelapse.ui.HomeTab
 import de.example.timelapse.ui.SettingsTab
 import de.example.timelapse.ui.theme.TimelapseTheme
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val cameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -82,17 +85,20 @@ class MainActivity : ComponentActivity() {
             lp.screenBrightness = 0.01f
             window.attributes = lp
 
-            Handler(Looper.getMainLooper()).postDelayed({
-                try { 
-                    moveTaskToBack(true) 
-                } catch (_: Throwable) {}
-                
-                // Restore default brightness when moving to the background
-                // so that when the user opens the app manually later, it opens with normal brightness.
-                val lpRestore = window.attributes
-                lpRestore.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
-                window.attributes = lpRestore
-            }, 8000)
+            lifecycleScope.launch {
+                delay(8000)
+                if (!isFinishing) {
+                    try { 
+                        moveTaskToBack(true) 
+                    } catch (_: Throwable) {}
+                    
+                    // Restore default brightness when moving to the background
+                    // so that when the user opens the app manually later, it opens with normal brightness.
+                    val lpRestore = window.attributes
+                    lpRestore.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                    window.attributes = lpRestore
+                }
+            }
         }
     }
 

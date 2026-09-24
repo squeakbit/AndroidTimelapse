@@ -16,19 +16,25 @@ object WakeLockHolder {
 
     @Synchronized
     fun acquire(context: Context, timeoutMs: Long) {
-        release()
         val pm = context.applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Timelapse:AlarmWakeLock").apply {
-            setReferenceCounted(false)
-            acquire(timeoutMs)
+        if (wakeLock == null) {
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Timelapse:AlarmWakeLock").apply {
+                setReferenceCounted(true)
+            }
+        }
+        wakeLock?.let {
+            try {
+                it.acquire(timeoutMs)
+            } catch (_: Throwable) {}
         }
     }
 
     @Synchronized
     fun release() {
         wakeLock?.let {
-            if (it.isHeld) try { it.release() } catch (_: Throwable) {}
+            if (it.isHeld) {
+                try { it.release() } catch (_: Throwable) {}
+            }
         }
-        wakeLock = null
     }
 }

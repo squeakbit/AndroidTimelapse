@@ -1,6 +1,7 @@
 package de.example.timelapse
 
 import android.content.Context
+import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 
@@ -16,13 +17,29 @@ class SecureSecrets private constructor(context: Context) {
         }
     }
 
-    private val prefs = EncryptedSharedPreferences.create(
-        context,
-        "secrets",
-        MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-    )
+    private val prefs: SharedPreferences = try {
+        EncryptedSharedPreferences.create(
+            context,
+            "secrets",
+            MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
+    } catch (_: Throwable) {
+        // Fallback if encrypted prefs fail (e.g. after backup restore on a new device where MasterKey differs)
+        try {
+            context.getSharedPreferences("secrets", Context.MODE_PRIVATE).edit().clear().apply()
+            EncryptedSharedPreferences.create(
+                context,
+                "secrets",
+                MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+        } catch (_: Throwable) {
+            context.getSharedPreferences("secrets_fallback", Context.MODE_PRIVATE)
+        }
+    }
     
     var mqttUsername: String
         get() = prefs.getString("mqtt_user", "") ?: ""

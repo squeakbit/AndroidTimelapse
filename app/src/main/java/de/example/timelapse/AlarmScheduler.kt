@@ -135,7 +135,8 @@ class AlarmScheduler(private val c:Context){
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
                 options
             ) as PendingIntent
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            Log.w("Timelapse", "Failed to invoke getBroadcast with background activity start mode", t)
             PendingIntent.getBroadcast(c, request, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         }
     }
@@ -165,7 +166,8 @@ class AlarmScheduler(private val c:Context){
                 PendingIntent.FLAG_IMMUTABLE,
                 options
             ) as PendingIntent
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            Log.w("Timelapse", "Failed to invoke getActivity with background activity start mode", t)
             PendingIntent.getActivity(c, 0, intent, PendingIntent.FLAG_IMMUTABLE)
         }
     }

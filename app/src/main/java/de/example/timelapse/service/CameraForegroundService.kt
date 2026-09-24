@@ -87,6 +87,12 @@ class CameraForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        createChannel()
+        if (Build.VERSION.SDK_INT >= 29) {
+            startForeground(10, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
+        } else {
+            startForeground(10, notification())
+        }
         hasCameraPermission = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
         if (!hasCameraPermission) {
             Log.e("Timelapse", "CAMERA permission not granted - aborting service")
@@ -94,12 +100,6 @@ class CameraForegroundService : Service() {
             return
         }
         instance = this
-        createChannel()
-        if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(10, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
-        } else {
-            startForeground(10, notification())
-        }
         
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
         prefs.registerOnSharedPreferenceChangeListener(prefListener)
@@ -242,14 +242,14 @@ class CameraForegroundService : Service() {
     }
 
     private suspend fun capture(s: SettingsManager) {
+        if (s.timeWindowEnabled && !isWithinWindow(s)) return
+
         try {
             s.lastCaptureAt = System.currentTimeMillis()
             AlarmScheduler(this).scheduleNextCapture()
         } catch (t: Throwable) {
             Log.e("Timelapse", "failed to schedule next capture", t)
         }
-
-        if (s.timeWindowEnabled && !isWithinWindow(s)) return
         
         try {
             val cameras = PhotoCaptureHelper.resolveCameras(this, s)
