@@ -14,7 +14,7 @@ class MqttDiscovery(private val mqtt: MqttClientManager, private val s: Settings
     private fun device() = JSONObject().apply {
         put("identifiers", org.json.JSONArray().put(s.deviceId))
         put("name", s.deviceName)
-        put("manufacturer", "Android Timelapse")
+        put("manufacturer", "Fern-Sehen")
         put("model", "Camera")
     }
 

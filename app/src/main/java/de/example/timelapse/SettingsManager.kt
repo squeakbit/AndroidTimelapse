@@ -18,7 +18,7 @@ class SettingsManager(context: Context) {
         get() = getId()
         set(v) { p.edit().putString("device_id", v).apply() }
     var deviceName: String
-        get() = p.getString("device_name", "Android Timelapse") ?: "Android Timelapse"
+        get() = p.getString("device_name", "Fern-Sehen") ?: "Fern-Sehen"
         set(v) = p.edit().putString("device_name", v).apply()
     var timelapseEnabled: Boolean
         get() = p.getBoolean("timelapse_enabled", false)

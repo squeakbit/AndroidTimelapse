@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Android Timelapse</string>
+    <string name="app_name">Fern-Sehen</string>
     <string name="tab_start">Start</string>
     <string name="tab_camera">Camera</string>
     <string name="tab_setup">Setup</string>
