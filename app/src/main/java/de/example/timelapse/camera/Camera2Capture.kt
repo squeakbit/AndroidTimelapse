@@ -195,8 +195,10 @@ class Camera2Capture(private val context: Context) {
             reader.close()
             afReader.close()
         }
-        if (!ok && error != null) throw error!!
-        return ok
+        if (!ok) {
+            throw error ?: IllegalStateException("Camera capture failed or timed out for camera $cameraId")
+        }
+        return true
     }
 
     /**

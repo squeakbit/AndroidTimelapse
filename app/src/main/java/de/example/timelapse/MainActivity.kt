@@ -59,6 +59,8 @@ class MainActivity : ComponentActivity() {
             )
         } else if (Build.VERSION.SDK_INT >= 33) {
             mediaPermission.launch(arrayOf(Manifest.permission.READ_MEDIA_IMAGES))
+        } else if (Build.VERSION.SDK_INT >= 29) {
+            storagePermission.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
         } else {
             storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }

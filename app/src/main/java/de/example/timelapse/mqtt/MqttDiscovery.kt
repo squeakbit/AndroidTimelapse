@@ -1,6 +1,7 @@
 package de.example.timelapse.mqtt
 import android.content.Context
 import android.os.BatteryManager
+import android.util.Log
 import de.example.timelapse.SettingsManager
 import de.example.timelapse.data.AppDatabase
 import org.json.JSONObject
@@ -18,6 +19,7 @@ class MqttDiscovery(private val mqtt: MqttClientManager, private val s: Settings
     }
 
     suspend fun publishAll() {
+        Log.i("Timelapse", "MqttDiscovery: starting publishAll for ${s.deviceId}")
         sensor("battery", "Akku", "$base/battery", "mdi:battery", "%")
         sensor("photos_pending", "Fotos ausstehend", "$base/photos_pending", "mdi:image-multiple-outline", null)
         sensor("last_photo", "Letztes Foto", "$base/last_photo", "mdi:camera-timer", "timestamp")
@@ -102,8 +104,35 @@ class MqttDiscovery(private val mqtt: MqttClientManager, private val s: Settings
             put("icon", "mdi:cloud-upload")
             put("device", device())
         })
+
+        // SMB Auto-Upload Switch
+        config("switch", "smb_upload", JSONObject().apply {
+            put("name", "${s.deviceName} SMB Auto-Upload")
+            put("unique_id", "${s.deviceId}_smb_upload")
+            put("command_topic", "$base/smb_upload/set")
+            put("state_topic", "$base/smb_upload/state")
+            put("payload_on", "ON")
+            put("payload_off", "OFF")
+            put("retain", true)
+            put("optimistic", false)
+            put("icon", "mdi:folder-sync")
+            put("device", device())
+        })
+
+        // SMB Upload Time
+        config("text", "smb_upload_time", JSONObject().apply {
+            put("name", "${s.deviceName} SMB Uploadzeit")
+            put("unique_id", "${s.deviceId}_smb_upload_time")
+            put("command_topic", "$base/smb_upload_time/set")
+            put("state_topic", "$base/smb_upload_time/state")
+            put("pattern", "^[0-2][0-9]:[0-5][0-9]$")
+            put("mode", "text")
+            put("icon", "mdi:clock-outline")
+            put("device", device())
+        })
         
         publishState()
+        Log.i("Timelapse", "MqttDiscovery: finished publishAll for ${s.deviceId}")
     }
 
     /**
@@ -124,6 +153,8 @@ class MqttDiscovery(private val mqtt: MqttClientManager, private val s: Settings
             mqtt.publish("$base/window_end/state", String.format(Locale.US, "%02d:%02d", s.windowEndHour, s.windowEndMinute))
             mqtt.publish("$base/capture_interval/state", s.captureIntervalMinutes.toString())
             mqtt.publish("$base/upload/state", if (s.manualUploadRequested) "ON" else "OFF")
+            mqtt.publish("$base/smb_upload/state", if (s.smbUploadEnabled) "ON" else "OFF")
+            mqtt.publish("$base/smb_upload_time/state", String.format(Locale.US, "%02d:%02d", s.smbUploadHour, s.smbUploadMinute))
             dao.getLastPhoto()?.let {
                 mqtt.publish("$base/last_photo", Instant.ofEpochMilli(it.capturedAt).toString())
             }
@@ -151,6 +182,8 @@ class MqttDiscovery(private val mqtt: MqttClientManager, private val s: Settings
     private suspend fun config(type: String, id: String, json: JSONObject) {
         if (!json.has("unique_id")) json.put("unique_id", "${s.deviceId}_$id")
         if (!json.has("device")) json.put("device", device())
-        mqtt.publish("homeassistant/$type/${s.deviceId}_$id/config", json.toString(), true)
+        val topic = "homeassistant/$type/${s.deviceId}_$id/config"
+        Log.d("Timelapse", "MqttDiscovery: publishing config to $topic")
+        mqtt.publish(topic, json.toString(), true)
     }
 }

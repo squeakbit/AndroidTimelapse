@@ -30,6 +30,8 @@ import de.example.timelapse.data.PhotoEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileInputStream
+import java.io.InputStream
 import java.text.SimpleDateFormat
 import java.util.Locale
 
@@ -38,15 +40,63 @@ sealed class GhostPhotoState {
     object Loading : GhostPhotoState()
     object NoPhoto : GhostPhotoState()
     object LoadFailed : GhostPhotoState()
-    data class Loaded(val bitmap: Bitmap, val edgeBitmap: Bitmap? = null) : GhostPhotoState()
+    data class Loaded(val bitmap: Bitmap, val edgeBitmap: Bitmap? = null) : GhostPhotoState() {
+        fun recycle() {
+            try {
+                if (!bitmap.isRecycled) bitmap.recycle()
+                if (edgeBitmap != null && !edgeBitmap.isRecycled) edgeBitmap.recycle()
+            } catch (_: Throwable) {}
+        }
+    }
+}
+
+fun openInputStreamForUri(context: Context, uri: Uri): InputStream? {
+    try {
+        val stream = context.contentResolver.openInputStream(uri)
+        if (stream != null) return stream
+    } catch (_: Throwable) {}
+
+    try {
+        val path = if (uri.scheme == "file") uri.path else if (uri.scheme == null) uri.toString() else null
+        if (!path.isNullOrBlank()) {
+            val file = File(path)
+            if (file.exists() && file.canRead()) {
+                return FileInputStream(file)
+            }
+        }
+    } catch (_: Throwable) {}
+
+    return null
 }
 
 fun isUriReadable(context: Context, uri: Uri): Boolean {
     return try {
-        context.contentResolver.openInputStream(uri)?.use { true } ?: false
+        openInputStreamForUri(context, uri)?.use { true } ?: false
     } catch (_: Throwable) {
         false
     }
+}
+
+fun deleteLocalMediaFile(context: Context, uri: Uri): Boolean {
+    var deleted = false
+    try {
+        if (context.contentResolver.delete(uri, null, null) > 0) {
+            deleted = true
+        }
+    } catch (_: Throwable) {}
+
+    if (!deleted) {
+        try {
+            val path = uri.path
+            if (!path.isNullOrBlank()) {
+                val file = File(path)
+                if (file.exists()) {
+                    deleted = file.delete()
+                }
+            }
+        } catch (_: Throwable) {}
+    }
+    return deleted
 }
 
 private fun parseDateFromFileName(fileName: String): Long {
@@ -364,12 +414,11 @@ fun decodeOrientedBitmap(path: String): Bitmap? {
 }
 
 fun decodeOrientedBitmap(context: Context, uri: Uri, targetSize: Int = 1600): Bitmap? {
-    val resolver = context.contentResolver
     val options = BitmapFactory.Options().apply {
         inJustDecodeBounds = true
     }
     try {
-        resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
+        openInputStreamForUri(context, uri)?.use { BitmapFactory.decodeStream(it, null, options) }
     } catch (_: Throwable) {
         return null
     }
@@ -378,15 +427,20 @@ fun decodeOrientedBitmap(context: Context, uri: Uri, targetSize: Int = 1600): Bi
     options.inJustDecodeBounds = false
 
     val bitmap = try {
-        resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
+        openInputStreamForUri(context, uri)?.use { BitmapFactory.decodeStream(it, null, options) }
     } catch (_: Throwable) {
         null
     } ?: return null
 
     val degrees = try {
-        resolver.openFileDescriptor(uri, "r")?.use { pfd ->
-            exifRotationDegrees(ExifInterface(pfd.fileDescriptor))
-        } ?: 0
+        if (uri.scheme == "file" || uri.scheme == null) {
+            val path = uri.path ?: uri.toString()
+            exifRotationDegrees(ExifInterface(path))
+        } else {
+            context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                exifRotationDegrees(ExifInterface(pfd.fileDescriptor))
+            } ?: 0
+        }
     } catch (_: Throwable) {
         0
     }
@@ -401,12 +455,24 @@ fun facingLabel(context: Context, facing: Int): String = when (facing) {
 }
 
 fun applySobelFilter(source: Bitmap): Bitmap {
-    val width = source.width
-    val height = source.height
+    val maxDim = 800
+    val scaledSource = if (source.width > maxDim || source.height > maxDim) {
+        val aspect = source.width.toFloat() / source.height
+        val (sw, sh) = if (aspect >= 1f) maxDim to (maxDim / aspect).toInt() else (maxDim * aspect).toInt() to maxDim
+        Bitmap.createScaledBitmap(source, sw, sh, true)
+    } else {
+        source
+    }
+
+    val width = scaledSource.width
+    val height = scaledSource.height
     val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
 
     val pixels = IntArray(width * height)
-    source.getPixels(pixels, 0, width, 0, 0, width, height)
+    scaledSource.getPixels(pixels, 0, width, 0, 0, width, height)
+    if (scaledSource !== source) {
+        scaledSource.recycle()
+    }
 
     val gray = IntArray(width * height)
     for (i in pixels.indices) {

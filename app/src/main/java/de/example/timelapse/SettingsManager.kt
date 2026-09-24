@@ -6,6 +6,7 @@ import java.util.UUID
 
 class SettingsManager(context: Context) {
     private val p = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+    private val secrets by lazy { SecureSecrets.getInstance(context) }
     private fun getId(): String {
         val current = p.getString("device_id", null)
         if (current != null) return current
@@ -114,11 +115,35 @@ class SettingsManager(context: Context) {
         get() = p.getBoolean("mqtt_tls", false)
         set(v) = p.edit().putBoolean("mqtt_tls", v).apply()
     var mqttUsername: String
-        get() = p.getString("mqtt_username", "") ?: ""
-        set(v) = p.edit().putString("mqtt_username", v).apply()
+        get() {
+            val sec = secrets.mqttUsername
+            if (sec.isNotBlank()) return sec
+            val legacy = p.getString("mqtt_username", "") ?: ""
+            if (legacy.isNotBlank()) {
+                secrets.mqttUsername = legacy
+                p.edit().remove("mqtt_username").apply()
+            }
+            return legacy
+        }
+        set(v) {
+            secrets.mqttUsername = v
+            p.edit().remove("mqtt_username").apply()
+        }
     var mqttPassword: String
-        get() = p.getString("mqtt_password", "") ?: ""
-        set(v) = p.edit().putString("mqtt_password", v).apply()
+        get() {
+            val sec = secrets.mqttPassword
+            if (sec.isNotBlank()) return sec
+            val legacy = p.getString("mqtt_password", "") ?: ""
+            if (legacy.isNotBlank()) {
+                secrets.mqttPassword = legacy
+                p.edit().remove("mqtt_password").apply()
+            }
+            return legacy
+        }
+        set(v) {
+            secrets.mqttPassword = v
+            p.edit().remove("mqtt_password").apply()
+        }
     var smbHost: String
         get() = p.getString("smb_host", "") ?: ""
         set(v) = p.edit().putString("smb_host", v).apply()
@@ -126,11 +151,35 @@ class SettingsManager(context: Context) {
         get() = p.getString("smb_share", "") ?: ""
         set(v) = p.edit().putString("smb_share", v).apply()
     var smbUsername: String
-        get() = p.getString("smb_username", "") ?: ""
-        set(v) = p.edit().putString("smb_username", v).apply()
+        get() {
+            val sec = secrets.smbUsername
+            if (sec.isNotBlank()) return sec
+            val legacy = p.getString("smb_username", "") ?: ""
+            if (legacy.isNotBlank()) {
+                secrets.smbUsername = legacy
+                p.edit().remove("smb_username").apply()
+            }
+            return legacy
+        }
+        set(v) {
+            secrets.smbUsername = v
+            p.edit().remove("smb_username").apply()
+        }
     var smbPassword: String
-        get() = p.getString("smb_password", "") ?: ""
-        set(v) = p.edit().putString("smb_password", v).apply()
+        get() {
+            val sec = secrets.smbPassword
+            if (sec.isNotBlank()) return sec
+            val legacy = p.getString("smb_password", "") ?: ""
+            if (legacy.isNotBlank()) {
+                secrets.smbPassword = legacy
+                p.edit().remove("smb_password").apply()
+            }
+            return legacy
+        }
+        set(v) {
+            secrets.smbPassword = v
+            p.edit().remove("smb_password").apply()
+        }
     var smbDomain: String
         get() = p.getString("smb_domain", "") ?: ""
         set(v) = p.edit().putString("smb_domain", v).apply()

@@ -65,19 +65,20 @@ class CameraForegroundService : Service() {
     private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == "timelapse_enabled" || key == "capture_interval_minutes" || key == "manual_upload_requested" ||
             key == "time_window_enabled" || key == "window_start_hour" || key == "window_start_minute" ||
-            key == "window_end_hour" || key == "window_end_minute") {
+            key == "window_end_hour" || key == "window_end_minute" ||
+            key == "smb_upload_enabled" || key == "smb_upload_hour" || key == "smb_upload_minute") {
             nudgeChannel.trySend(Unit)
             
             // Sync state to MQTT immediately
             if (key == "timelapse_enabled" || key == "time_window_enabled" || key == "window_start_hour" || 
                 key == "window_start_minute" || key == "window_end_hour" || key == "window_end_minute" ||
-                key == "capture_interval_minutes") {
+                key == "capture_interval_minutes" || key == "smb_upload_enabled" || key == "smb_upload_hour" ||
+                key == "smb_upload_minute") {
                 scope.launch {
                     try {
                         val s = SettingsManager(this@CameraForegroundService)
                         val mqtt = MqttClientManager(this@CameraForegroundService)
                         MqttDiscovery(mqtt, s, this@CameraForegroundService).publishState()
-                        mqtt.close()
                     } catch (_: Throwable) {}
                 }
             }
@@ -130,9 +131,18 @@ class CameraForegroundService : Service() {
     private fun startMqttListenerIfNeeded() {
         if (mqttJob?.isActive == true) return
         mqttJob = scope.launch {
+            var lastStatePublish = 0L
             while (isActive) {
                 try {
-                    MqttClientManager(this@CameraForegroundService).handleMqttCommands()
+                    val mqtt = MqttClientManager(this@CameraForegroundService)
+                    mqtt.handleMqttCommands()
+
+                    val now = System.currentTimeMillis()
+                    if (now - lastStatePublish >= 60_000L) {
+                        lastStatePublish = now
+                        val s = SettingsManager(this@CameraForegroundService)
+                        MqttDiscovery(mqtt, s, this@CameraForegroundService).publishState()
+                    }
                 } catch (_: Throwable) {}
                 delay(30_000) // Keep-alive/reconnect check
             }

@@ -104,6 +104,7 @@ object PhotoCaptureHelper {
      * camera at a time, awaited before the next), so that's not an issue
      * here.
      */
+    @Synchronized
     private fun nextSequence(context: Context, label: String, dateKey: String): Int {
         val prefs = context.getSharedPreferences(COUNTER_PREFS, Context.MODE_PRIVATE)
         val lastDate = prefs.getString("${label}_date", null)

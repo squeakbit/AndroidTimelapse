@@ -15,6 +15,11 @@ import android.util.Log
 import java.text.SimpleDateFormat
 import java.util.*
 
+import de.example.timelapse.ui.deleteLocalMediaFile
+import de.example.timelapse.ui.isUriReadable
+import de.example.timelapse.ui.openInputStreamForUri
+import de.example.timelapse.ui.resolveValidPhotoUri
+
 data class UploadResult(val uploaded:Int, val failed:Int, val removed:Int=0, val lastError:String?=null)
 
 class SmbUploader(private val context:Context){
@@ -67,9 +72,7 @@ class SmbUploader(private val context:Context){
     val sorted = photos.sortedByDescending { it.capturedAt }
     for (i in 1 until sorted.size) {
      val p = sorted[i]
-     try {
-      context.contentResolver.delete(Uri.parse(p.localPath), null, null)
-     } catch (_: Throwable) {}
+     deleteLocalMediaFile(context, Uri.parse(p.localPath))
     }
    }
   } catch (t: Throwable) {
@@ -83,33 +86,79 @@ class SmbUploader(private val context:Context){
   data class Failed(val error: String) : UploadOutcome()
  }
 
- private suspend fun uploadOne(share:DiskShare,p:PhotoEntity,dao:PhotoDao,s:SettingsManager):UploadOutcome{
-  val uri=Uri.parse(p.localPath)
-  val readable=try{context.contentResolver.openInputStream(uri)?.use{true} ?: false}catch(_:Throwable){false}
-  if(!readable){dao.delete(p);return UploadOutcome.Removed}
-  return try{
-   val date=SimpleDateFormat("yyyy-MM-dd",Locale.US).format(Date(p.capturedAt))
-   val dir=listOf(s.smbRemoteDirectory.trim('/'),date).filter{it.isNotBlank()}.joinToString("/")
-   ensureDir(share,dir);val remote="$dir/${p.fileName}"
-   context.contentResolver.openInputStream(uri)!!.use{input->
-    share.openFile(remote,setOf(AccessMask.FILE_WRITE_DATA),null,SMB2ShareAccess.ALL,SMB2CreateDisposition.FILE_OVERWRITE_IF,null).use{f->
-     f.getOutputStream().use{out->input.copyTo(out,65536)}
+ private suspend fun uploadOne(share: DiskShare, p: PhotoEntity, dao: PhotoDao, s: SettingsManager): UploadOutcome {
+  var currentPhoto = p
+  var uri = Uri.parse(currentPhoto.localPath)
+
+  if (!isUriReadable(context, uri)) {
+   val resolvedUri = resolveValidPhotoUri(context, currentPhoto)
+   if (resolvedUri != null) {
+    uri = resolvedUri
+    currentPhoto = currentPhoto.copy(localPath = resolvedUri.toString())
+   } else {
+    dao.delete(currentPhoto)
+    return UploadOutcome.Removed
+   }
+  }
+
+  return try {
+   val date = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(currentPhoto.capturedAt))
+   val dir = listOf(s.smbRemoteDirectory.trim('/'), date).filter { it.isNotBlank() }.joinToString("/")
+   ensureDir(share, dir)
+   val remote = "$dir/${currentPhoto.fileName}"
+
+   val stream = openInputStreamForUri(context, uri)
+   if (stream == null) {
+    val resolvedUri = resolveValidPhotoUri(context, currentPhoto)
+    if (resolvedUri != null) {
+     uri = resolvedUri
+     currentPhoto = currentPhoto.copy(localPath = resolvedUri.toString())
+    } else {
+     dao.delete(currentPhoto)
+     return UploadOutcome.Removed
     }
    }
-   dao.update(p.copy(uploadedAt=System.currentTimeMillis(),uploadAttempts=p.uploadAttempts+1,lastUploadError=null,remotePath=remote))
-   
-   if(s.deleteAfterUpload) {
-    val label = p.fileName.substringBefore('_')
+
+   val validStream = stream ?: openInputStreamForUri(context, uri)
+   if (validStream == null) {
+    dao.delete(currentPhoto)
+    return UploadOutcome.Removed
+   }
+
+   validStream.use { input ->
+    share.openFile(
+     remote,
+     setOf(AccessMask.FILE_WRITE_DATA),
+     null,
+     SMB2ShareAccess.ALL,
+     SMB2CreateDisposition.FILE_OVERWRITE_IF,
+     null
+    ).use { f ->
+     f.getOutputStream().use { out -> input.copyTo(out, 65536) }
+    }
+   }
+
+   dao.update(
+    currentPhoto.copy(
+     uploadedAt = System.currentTimeMillis(),
+     uploadAttempts = currentPhoto.uploadAttempts + 1,
+     lastUploadError = null,
+     remotePath = remote
+    )
+   )
+
+   if (s.deleteAfterUpload) {
+    val label = currentPhoto.fileName.substringBefore('_')
     val lastPhoto = dao.getLastPhotoByCameraLabel(label)
-    if (lastPhoto != null && (lastPhoto.id != p.id)) {
-     try { context.contentResolver.delete(uri, null, null) } catch (_: Throwable) {}
+    if (lastPhoto != null && (lastPhoto.id != currentPhoto.id)) {
+     deleteLocalMediaFile(context, uri)
     }
    }
    UploadOutcome.Success
-  }catch(t:Throwable){
+  } catch (t: Throwable) {
    val err = describe(t)
-   Log.w("Timelapse", "File upload failed: ${p.fileName}", t)
-   dao.update(p.copy(uploadAttempts=p.uploadAttempts+1,lastUploadError=err))
+   Log.w("Timelapse", "File upload failed: ${currentPhoto.fileName}", t)
+   dao.update(currentPhoto.copy(uploadAttempts = currentPhoto.uploadAttempts + 1, lastUploadError = err))
    UploadOutcome.Failed(err)
   }
  }

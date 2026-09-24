@@ -1,3 +1,17 @@
 package de.example.timelapse
-import android.content.*
-class BootReceiver:BroadcastReceiver(){override fun onReceive(c:Context,i:Intent){if(i.action==Intent.ACTION_BOOT_COMPLETED||i.action==Intent.ACTION_LOCKED_BOOT_COMPLETED||i.action==Intent.ACTION_MY_PACKAGE_REPLACED)AlarmScheduler(c).scheduleAll()}}
+
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+
+class BootReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val action = intent.action
+        if (action == Intent.ACTION_BOOT_COMPLETED ||
+            action == Intent.ACTION_LOCKED_BOOT_COMPLETED ||
+            action == Intent.ACTION_MY_PACKAGE_REPLACED
+        ) {
+            AlarmScheduler(context).scheduleAll()
+        }
+    }
+}

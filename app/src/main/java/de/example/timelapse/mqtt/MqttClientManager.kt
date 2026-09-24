@@ -36,10 +36,8 @@ class MqttClientManager(private val context:Context){
  }
  
  suspend fun connectAndDiscover() = withContext(Dispatchers.IO) {
-    try {
-        getConnectedClient()
-        MqttDiscovery(this@MqttClientManager, settings, context).publishAll()
-    } catch (_: Exception) {}
+    getConnectedClient()
+    MqttDiscovery(this@MqttClientManager, settings, context).publishAll()
  }
 
  suspend fun handleMqttCommands() = withContext(Dispatchers.IO) {
@@ -47,8 +45,19 @@ class MqttClientManager(private val context:Context){
   val c = try { getConnectedClient() } catch (_: Throwable) { return@withContext }
   
   try {
+   MqttDiscovery(this@MqttClientManager, settings, context).publishAll()
+
    val base = "timelapse/${settings.deviceId}"
-   val topics = arrayOf("$base/upload/set", "$base/enabled/set", "$base/time_window/set", "$base/window_start/set", "$base/window_end/set", "$base/capture_interval/set")
+   val topics = arrayOf(
+    "$base/upload/set",
+    "$base/enabled/set",
+    "$base/time_window/set",
+    "$base/window_start/set",
+    "$base/window_end/set",
+    "$base/capture_interval/set",
+    "$base/smb_upload/set",
+    "$base/smb_upload_time/set"
+   )
    
    c.setCallback(object : MqttCallback {
     override fun disconnected(dr: MqttDisconnectResponse?) {}
@@ -108,6 +117,29 @@ class MqttClientManager(private val context:Context){
         changed = true
        }
       }
+      "$base/smb_upload/set" -> {
+       val on = (payload == "ON")
+       if (on != settings.smbUploadEnabled) {
+        settings.smbUploadEnabled = on
+        AlarmScheduler(context).scheduleAll()
+        CameraForegroundService.nudge()
+        changed = true
+       }
+      }
+      "$base/smb_upload_time/set" -> {
+       val parts = payload.split(":")
+       if (parts.size == 2) {
+        val h = parts[0].toIntOrNull()
+        val m = parts[1].toIntOrNull()
+        if (h != null && m != null && h in 0..23 && m in 0..59) {
+         settings.smbUploadHour = h
+         settings.smbUploadMinute = m
+         AlarmScheduler(context).scheduleUpload()
+         CameraForegroundService.nudge()
+         changed = true
+        }
+       }
+      }
      }
      
      if (changed) {
@@ -122,8 +154,18 @@ class MqttClientManager(private val context:Context){
         // Re-subscribe on connect/reconnect
         CoroutineScope(Dispatchers.IO).launch {
             try {
+                MqttDiscovery(this@MqttClientManager, settings, context).publishAll()
                 val base = "timelapse/${settings.deviceId}"
-                val ts = arrayOf("$base/upload/set", "$base/enabled/set", "$base/time_window/set", "$base/window_start/set", "$base/window_end/set", "$base/capture_interval/set")
+                val ts = arrayOf(
+                    "$base/upload/set",
+                    "$base/enabled/set",
+                    "$base/time_window/set",
+                    "$base/window_start/set",
+                    "$base/window_end/set",
+                    "$base/capture_interval/set",
+                    "$base/smb_upload/set",
+                    "$base/smb_upload_time/set"
+                )
                 c.subscribe(ts, IntArray(ts.size) { 1 })
             } catch (_: Throwable) {}
         }
@@ -151,7 +193,7 @@ class MqttClientManager(private val context:Context){
    val o=MqttConnectionOptions().apply{
     isCleanStart=false // Keep session to survive brief disconnects
     isAutomaticReconnect=true
-    keepAliveInterval = 600
+    keepAliveInterval = 60
     val secrets = SecureSecrets.getInstance(context)
     userName=secrets.mqttUsername.ifBlank{settings.mqttUsername}
     password=secrets.mqttPassword.ifBlank{settings.mqttPassword}.toByteArray()

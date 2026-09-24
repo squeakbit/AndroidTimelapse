@@ -194,8 +194,10 @@ fun CameraTab(
         if (selectedCameraId.isNotBlank()) {
             previewLoading = true
             val file = PhotoCaptureHelper.capturePreview(context, selectedCameraId)
-            previewBitmap = file?.let { decodeOrientedBitmap(it.absolutePath) }
+            val newBitmap = file?.let { decodeOrientedBitmap(it.absolutePath) }
             file?.delete()
+            previewBitmap?.let { if (!it.isRecycled) it.recycle() }
+            previewBitmap = newBitmap
             previewLoading = false
         }
     }
@@ -207,7 +209,13 @@ fun CameraTab(
     }
 
     DisposableEffect(Unit) {
-        onDispose { previewController.release(); textureSurface?.release(); textureSurface = null }
+        onDispose {
+            previewController.release()
+            textureSurface?.release()
+            textureSurface = null
+            previewBitmap?.let { if (!it.isRecycled) it.recycle() }
+            (ghostPhotoState as? GhostPhotoState.Loaded)?.recycle()
+        }
     }
 
     LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
