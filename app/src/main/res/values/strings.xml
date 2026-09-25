@@ -14,6 +14,7 @@
     <string name="use_time_window">Use Time Window</string>
     <string name="start_time">Start Time</string>
     <string name="end_time">End Time</string>
+    <string name="light_offset_seconds">Light Offset / Buffer (sec.)</string>
     <string name="active_between">Active from %1$02d:%2$02d to %3$02d:%4$02d</string>
     <string name="active_cameras">Active Cameras</string>
     <string name="all">All</string>

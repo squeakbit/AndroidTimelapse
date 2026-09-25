@@ -56,6 +56,7 @@ fun HomeTab(
     var startMinute by remember { mutableIntStateOf(settings.windowStartMinute) }
     var endHour by remember { mutableIntStateOf(settings.windowEndHour) }
     var endMinute by remember { mutableIntStateOf(settings.windowEndMinute) }
+    var offsetText by remember { mutableStateOf(settings.windowOffsetSeconds.toString()) }
     var cameras by remember { mutableStateOf(emptyList<CameraInfo>()) }
     var selectedIds by remember { mutableStateOf(settings.selectedCameraIds) }
     var uploadStatus by remember { mutableStateOf("") }
@@ -72,6 +73,7 @@ fun HomeTab(
                 "window_start_minute" -> startMinute = settings.windowStartMinute
                 "window_end_hour" -> endHour = settings.windowEndHour
                 "window_end_minute" -> endMinute = settings.windowEndMinute
+                "window_offset_seconds" -> offsetText = settings.windowOffsetSeconds.toString()
                 "selected_camera_ids" -> selectedIds = settings.selectedCameraIds
             }
         }
@@ -229,6 +231,22 @@ fun HomeTab(
                                 }
                             }
                         }
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = offsetText,
+                            onValueChange = {
+                                offsetText = it
+                                val sec = it.toIntOrNull()
+                                if (sec != null && sec in 0..300) {
+                                    settings.windowOffsetSeconds = sec
+                                    AlarmScheduler(context).scheduleNextCapture()
+                                }
+                            },
+                            label = { Text(stringResource(R.string.light_offset_seconds)) },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
                 }
             }

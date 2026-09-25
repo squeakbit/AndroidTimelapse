@@ -14,6 +14,7 @@
     <string name="use_time_window">Zeitfenster verwenden</string>
     <string name="start_time">Startzeit</string>
     <string name="end_time">Endzeit</string>
+    <string name="light_offset_seconds">Licht-Puffer / Verzögerung (Sek.)</string>
     <string name="active_between">Aktiv von %1$02d:%2$02d bis %3$02d:%4$02d</string>
     <string name="active_cameras">Aktive Kameras</string>
     <string name="all">Alle</string>

@@ -201,6 +201,9 @@ class SettingsManager(context: Context) {
     var windowEndMinute: Int
         get() = p.getInt("window_end_minute", 0)
         set(v) = p.edit().putInt("window_end_minute", v.coerceIn(0, 59)).apply()
+    var windowOffsetSeconds: Int
+        get() = p.getInt("window_offset_seconds", 10)
+        set(v) = p.edit().putInt("window_offset_seconds", v.coerceIn(0, 300)).apply()
     /** Wall-clock time (epoch ms) of the last capture attempt (success or failure), used by
      *  CameraForegroundService's internal loop to know when the next one is due, and also
      *  shown in the UI as a general "still alive" indicator (there is no separate heartbeat). */

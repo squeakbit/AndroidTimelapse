@@ -14,10 +14,10 @@ import de.example.timelapse.camera.PhotoCaptureHelper
 import de.example.timelapse.mqtt.MqttClientManager
 import de.example.timelapse.mqtt.MqttDiscovery
 import de.example.timelapse.smb.SmbUploader
+import java.time.Instant
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
-import java.time.Instant
-import java.util.Calendar
+
 
 /**
  * Since Android 14, a foreground service of type "camera" cannot be
@@ -65,7 +65,7 @@ class CameraForegroundService : Service() {
     private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == "timelapse_enabled" || key == "capture_interval_minutes" || key == "manual_upload_requested" ||
             key == "time_window_enabled" || key == "window_start_hour" || key == "window_start_minute" ||
-            key == "window_end_hour" || key == "window_end_minute" ||
+            key == "window_end_hour" || key == "window_end_minute" || key == "window_offset_seconds" ||
             key == "smb_upload_enabled" || key == "smb_upload_hour" || key == "smb_upload_minute") {
             nudgeChannel.trySend(Unit)
             
@@ -213,36 +213,11 @@ class CameraForegroundService : Service() {
     }
 
     private fun msUntilNextCapture(s: SettingsManager): Long {
-        val nowCal = Calendar.getInstance()
-        if (s.timeWindowEnabled) {
-            val nowMinutes = nowCal.get(Calendar.HOUR_OF_DAY) * 60 + nowCal.get(Calendar.MINUTE)
-            val startMinutes = s.windowStartHour * 60 + s.windowStartMinute
-            val endMinutes = s.windowEndHour * 60 + s.windowEndMinute
-            val inside = if (startMinutes <= endMinutes) {
-                nowMinutes in startMinutes until endMinutes
-            } else {
-                nowMinutes >= startMinutes || nowMinutes < endMinutes
-            }
-            if (!inside) {
-                val targetCal = Calendar.getInstance().apply {
-                    set(Calendar.HOUR_OF_DAY, s.windowStartHour)
-                    set(Calendar.MINUTE, s.windowStartMinute)
-                    set(Calendar.SECOND, 0)
-                    set(Calendar.MILLISECOND, 0)
-                    if (timeInMillis <= nowCal.timeInMillis) {
-                        add(Calendar.DAY_OF_YEAR, 1)
-                    }
-                }
-                return (targetCal.timeInMillis - nowCal.timeInMillis).coerceAtLeast(0L)
-            }
-        }
-        val elapsed = System.currentTimeMillis() - s.lastCaptureAt
-        val intervalMs = s.captureIntervalMinutes * 60_000L
-        return intervalMs - elapsed
+        return TimeWindowUtils.msUntilNextCapture(s)
     }
 
     private suspend fun capture(s: SettingsManager) {
-        if (s.timeWindowEnabled && !isWithinWindow(s)) return
+        if (!isWithinWindow(s)) return
 
         try {
             s.lastCaptureAt = System.currentTimeMillis()
@@ -305,11 +280,7 @@ class CameraForegroundService : Service() {
     }
 
     private fun isWithinWindow(s: SettingsManager): Boolean {
-        val cal = Calendar.getInstance()
-        val now = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
-        val start = s.windowStartHour * 60 + s.windowStartMinute
-        val end = s.windowEndHour * 60 + s.windowEndMinute
-        return if (start <= end) now in start until end else now >= start || now < end
+        return TimeWindowUtils.isWithinWindowOrWindowEnd(s)
     }
 
     private fun createChannel() {

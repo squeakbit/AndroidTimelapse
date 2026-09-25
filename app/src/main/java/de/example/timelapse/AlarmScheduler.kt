@@ -43,37 +43,7 @@ class AlarmScheduler(private val c:Context){
      */
     fun scheduleNextCapture() {
         val s = SettingsManager(c)
-        val nowCal = Calendar.getInstance()
-        var waitMs = 0L
-        
-        if (s.timeWindowEnabled) {
-            val nowMinutes = nowCal.get(Calendar.HOUR_OF_DAY) * 60 + nowCal.get(Calendar.MINUTE)
-            val startMinutes = s.windowStartHour * 60 + s.windowStartMinute
-            val endMinutes = s.windowEndHour * 60 + s.windowEndMinute
-            val inside = if (startMinutes <= endMinutes) {
-                nowMinutes in startMinutes until endMinutes
-            } else {
-                nowMinutes >= startMinutes || nowMinutes < endMinutes
-            }
-            if (!inside) {
-                val targetCal = Calendar.getInstance().apply {
-                    set(Calendar.HOUR_OF_DAY, s.windowStartHour)
-                    set(Calendar.MINUTE, s.windowStartMinute)
-                    set(Calendar.SECOND, 0)
-                    set(Calendar.MILLISECOND, 0)
-                    if (timeInMillis <= nowCal.timeInMillis) {
-                        add(Calendar.DAY_OF_YEAR, 1)
-                    }
-                }
-                waitMs = (targetCal.timeInMillis - nowCal.timeInMillis).coerceAtLeast(0L)
-            }
-        }
-        
-        if (waitMs == 0L) {
-            val elapsed = System.currentTimeMillis() - s.lastCaptureAt
-            val intervalMs = s.captureIntervalMinutes * 60_000L
-            waitMs = (intervalMs - elapsed).coerceAtLeast(0L)
-        }
+        val waitMs = TimeWindowUtils.msUntilNextCapture(s)
         
         // Add a tiny 500ms offset to ensure we land AFTER the interval
         // boundary, preventing "just missed it" double-fires.
