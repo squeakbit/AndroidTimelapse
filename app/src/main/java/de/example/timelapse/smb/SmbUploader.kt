@@ -27,6 +27,11 @@ class SmbUploader(private val context:Context){
   val s=SettingsManager(context); val dao=AppDatabase.getInstance(context).photoDao(); val pending=dao.getPendingPhotos()
   Log.i("Timelapse","upload run: ${pending.size} pending file(s) found")
   if(pending.isEmpty())return@withContext UploadResult(0,0,0)
+  val allFileNames = dao.getAllFileNames()
+  val cameraLabelsInDb = allFileNames.map { it.substringBefore('_') }.filter { it.isNotBlank() }.distinct()
+  val pendingLabels = pending.map { it.fileName.substringBefore('_') }.filter { it.isNotBlank() }.distinct()
+  val hasMultipleCameras = s.selectedCameraIds.size > 1 || cameraLabelsInDb.size > 1 || pendingLabels.size > 1
+
   var u=0;var f=0;var r=0; var lastErr:String?=null; val client=SMBClient()
   try{
    Log.d("Timelapse", "Connecting to ${s.smbHost}...")
@@ -37,7 +42,7 @@ class SmbUploader(private val context:Context){
      Log.d("Timelapse", "Connecting to share ${s.smbShare}...")
      (session.connectShare(s.smbShare) as DiskShare).use{share->
       for(p in pending) {
-       val outcome = uploadOne(share, p, dao, s)
+       val outcome = uploadOne(share, p, dao, s, hasMultipleCameras)
        when(outcome) {
         is UploadOutcome.Success -> u++
         is UploadOutcome.Removed -> r++
@@ -86,7 +91,7 @@ class SmbUploader(private val context:Context){
   data class Failed(val error: String) : UploadOutcome()
  }
 
- private suspend fun uploadOne(share: DiskShare, p: PhotoEntity, dao: PhotoDao, s: SettingsManager): UploadOutcome {
+ private suspend fun uploadOne(share: DiskShare, p: PhotoEntity, dao: PhotoDao, s: SettingsManager, hasMultipleCameras: Boolean): UploadOutcome {
   var currentPhoto = p
   var uri = Uri.parse(currentPhoto.localPath)
 
@@ -103,7 +108,13 @@ class SmbUploader(private val context:Context){
 
   return try {
    val date = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(currentPhoto.capturedAt))
-   val dir = listOf(s.smbRemoteDirectory.trim('/'), date).filter { it.isNotBlank() }.joinToString("/")
+   val folderName = if (hasMultipleCameras) {
+    val label = currentPhoto.fileName.substringBefore('_')
+    "${label}_$date"
+   } else {
+    date
+   }
+   val dir = listOf(s.smbRemoteDirectory.trim('/'), folderName).filter { it.isNotBlank() }.joinToString("/")
    ensureDir(share, dir)
    val remote = "$dir/${currentPhoto.fileName}"
 

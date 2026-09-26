@@ -134,12 +134,14 @@ object PhotoCaptureHelper {
         // Used for the filename and as the day-boundary key for the
         // per-camera sequence counter.
         val dateKeyFormat = SimpleDateFormat("yyMMdd", Locale.US)
+        val timeKeyFormat = SimpleDateFormat("HHmm", Locale.US)
 
         val folderDate = folderDateFormat.format(now)
         val dateKey = dateKeyFormat.format(now)
+        val timeKey = timeKeyFormat.format(now)
         val label = precomputedLabel ?: cameraLabel(context, cameraId)
         val sequence = nextSequence(context, label, dateKey)
-        val fileName = "${label}_${dateKey}-${"%04d".format(sequence)}.jpg"
+        val fileName = "${label}_${dateKey}-${timeKey}-${"%04d".format(sequence)}.jpg"
 
         val temp = File.createTempFile("capture-", ".jpg", context.cacheDir)
         // Single-use per capture - must be closed afterwards or its

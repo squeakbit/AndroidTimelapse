@@ -104,12 +104,26 @@ private fun parseDateFromFileName(fileName: String): Long {
     val parts = nameWithoutExt.split('_')
     if (parts.size >= 2) {
         val datePart = parts[1]
-        val format = if (datePart.contains('-')) SimpleDateFormat("yyMMdd-HHmm", Locale.US)
-                     else SimpleDateFormat("yyMMdd", Locale.US)
-        try {
-            val date = format.parse(datePart)
-            if (date != null) return date.time
-        } catch (_: Throwable) {}
+        val dashParts = datePart.split('-')
+        if (dashParts.size >= 3) {
+            // New format: yyMMdd-HHmm-0001
+            try {
+                val dtStr = "${dashParts[0]}-${dashParts[1]}"
+                val date = SimpleDateFormat("yyMMdd-HHmm", Locale.US).parse(dtStr)
+                if (date != null) return date.time
+            } catch (_: Throwable) {}
+        } else if (dashParts.size == 2) {
+            // Legacy format: yyMMdd-0001
+            try {
+                val date = SimpleDateFormat("yyMMdd", Locale.US).parse(dashParts[0])
+                if (date != null) return date.time
+            } catch (_: Throwable) {}
+        } else {
+            try {
+                val date = SimpleDateFormat("yyMMdd", Locale.US).parse(datePart)
+                if (date != null) return date.time
+            } catch (_: Throwable) {}
+        }
     }
     return 0L
 }
